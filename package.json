@@ -9,6 +9,9 @@
     ".": "./src/index.js",
     "./relay-pool": "./src/relay-pool.js",
     "./auth": "./src/auth.js",
+    "./fsm": "./src/fsm.js",
+    "./voice": "./src/voice.js",
+    "./chat": "./src/chat.js",
     "./debug": "./src/debug.js",
     "./legacy": "./src/legacy/index.js",
     "./legacy/*": "./src/legacy/*"
