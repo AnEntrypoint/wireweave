@@ -7,14 +7,21 @@
   "module": "./src/index.js",
   "exports": {
     ".": "./src/index.js",
+    "./wireweave": "./src/wireweave.js",
     "./relay-pool": "./src/relay-pool.js",
     "./auth": "./src/auth.js",
     "./fsm": "./src/fsm.js",
     "./voice": "./src/voice.js",
     "./chat": "./src/chat.js",
-    "./debug": "./src/debug.js",
-    "./legacy": "./src/legacy/index.js",
-    "./legacy/*": "./src/legacy/*"
+    "./channels": "./src/channels.js",
+    "./servers": "./src/servers.js",
+    "./message": "./src/message.js",
+    "./bans": "./src/bans.js",
+    "./roles": "./src/roles.js",
+    "./settings": "./src/settings.js",
+    "./media": "./src/media.js",
+    "./pages": "./src/pages.js",
+    "./debug": "./src/debug.js"
   },
   "files": [
     "src",
