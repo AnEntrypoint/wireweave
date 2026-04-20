@@ -9,7 +9,9 @@
     ".": "./src/index.js",
     "./relay-pool": "./src/relay-pool.js",
     "./auth": "./src/auth.js",
-    "./debug": "./src/debug.js"
+    "./debug": "./src/debug.js",
+    "./legacy": "./src/legacy/index.js",
+    "./legacy/*": "./src/legacy/*"
   },
   "files": [
     "src",

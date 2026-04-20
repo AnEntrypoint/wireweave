@@ -12,12 +12,16 @@ npm i magicwand
 
 serverless nostr relay pool + auth, designed for voice/chat apps that run on public relays with zero backend. extracted from [zellous](https://github.com/AnEntrypoint/zellous). buildless, esm-only, no framework lock-in.
 
-## what's in v0.1
+## what's in this release
 
-- `RelayPool` — multi-relay connect, subscribe, publish, reconnect with backoff, event dedup, ndk-free
-- `NostrAuth` — local-key generation, nsec/hex import, NIP-07 extension login, event signing
+**SDK-shaped (ES modules, zero window.*):**
+- `RelayPool` — multi-relay connect, subscribe, publish, reconnect with backoff, event dedup
+- `NostrAuth` — local-key gen, nsec/hex import, NIP-07 extension login, event signing
 
-WebRTC voice, SFU hub election, channels, chat, servers — landing in subsequent releases. see CHANGELOG.
+**`magicwand/legacy/` — full browser-globals port (17 files, ~94kb):**
+nostr voice (perfect-negotiation, SFU hub election, camera), chat, channels, servers, roles, bans, media (blossom), pages, settings. copied verbatim from zellous. expects `state` + `XState` + `NostrTools` + `ui` on window. load order in `src/legacy/README.md`.
+
+SDK-shaping the voice/chat/channels/servers into proper ES modules lands in 0.3+. legacy files are the honest "move everything" — they work today exactly as they did in zellous.
 
 ## usage
 
