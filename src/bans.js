@@ -1,8 +1,8 @@
 export class Bans extends EventTarget {
-  constructor({ relayPool }) {
+  constructor({ relayPool, auth = null, roles = null }) {
     super();
     if (!relayPool) throw new Error('Bans: relayPool required');
-    this.pool = relayPool;
+    this.pool = relayPool; this.auth = auth; this.roles = roles;
     this.store = new Map();
     this.sub = null;
   }
@@ -12,6 +12,40 @@ export class Bans extends EventTarget {
   isTimedOut(serverId, pubkey) {
     const t = this.store.get(serverId)?.timeouts?.[pubkey];
     return !!t && t.expiry > Math.floor(Date.now() / 1000);
+  }
+
+  async ban(serverId, pubkey) {
+    if (!this.auth?.isLoggedIn()) throw new Error('Not logged in');
+    if (this.roles && !this.roles.isAdmin(serverId)) throw new Error('Insufficient permissions');
+    const dTag = 'zellous-ban:' + serverId + ':' + pubkey;
+    const signed = await this.auth.sign({
+      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      tags: [['d', dTag], ['server', serverId]],
+      content: JSON.stringify({ action: 'ban', pubkey, timestamp: Math.floor(Date.now() / 1000) })
+    });
+    this.pool.publish(signed);
+  }
+
+  async timeout(serverId, pubkey, minutes) {
+    if (!this.auth?.isLoggedIn()) throw new Error('Not logged in');
+    if (this.roles && !this.roles.isAdmin(serverId)) throw new Error('Insufficient permissions');
+    const expiry = Math.floor(Date.now() / 1000) + (minutes * 60);
+    const dTag = 'zellous-timeout:' + serverId + ':' + pubkey;
+    const signed = await this.auth.sign({
+      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      tags: [['d', dTag], ['server', serverId]],
+      content: JSON.stringify({ action: 'timeout', pubkey, expiry })
+    });
+    this.pool.publish(signed);
+  }
+
+  async kickFromVoice(pubkey) {
+    if (!this.auth?.isLoggedIn()) throw new Error('Not logged in');
+    const signed = await this.auth.sign({
+      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      tags: [['d', 'zellous-kick:' + pubkey]], content: ''
+    });
+    this.pool.publish(signed);
   }
 
   subscribe(serverId) {

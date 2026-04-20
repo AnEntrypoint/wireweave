@@ -41,6 +41,15 @@ export class Servers extends EventTarget {
     this._emit('updated', { servers: this.servers });
   }
 
+  async rename(serverId, name, iconColor = '#5865F2') {
+    if (!serverId?.startsWith(this.auth.pubkey + ':')) throw new Error('Only owner can rename');
+    const dTag = serverId.split(':')[1];
+    const signed = await this.auth.sign({ kind: 34550, created_at: Math.floor(Date.now() / 1000), tags: [['d', dTag], ['name', name], ['color', iconColor]], content: '' });
+    this.pool.publish(signed);
+    const s = this.servers.find(x => x.id === serverId);
+    if (s) { s.name = name; s.iconColor = iconColor; this.servers = [...this.servers]; this._persist(); this._emit('updated', { servers: this.servers }); }
+  }
+
   async create(name, iconColor = '#5865F2') {
     const dTag = Math.random().toString(36).slice(2, 10);
     const serverId = this.auth.pubkey + ':' + dTag;
