@@ -22,10 +22,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: install
-        run: npm install --no-package-lock
       - name: build site
-        run: npm run site:build
+        run: npx --yes flatspace@latest build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

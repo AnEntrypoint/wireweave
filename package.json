@@ -30,7 +30,7 @@
   ],
   "scripts": {
     "test": "node test.js",
-    "site:build": "node site/build.js"
+    "site:build": "npx --yes flatspace@latest build"
   },
   "repository": {
     "type": "git",
@@ -54,7 +54,6 @@
     "nostr-tools": "^2.7.0"
   },
   "devDependencies": {
-    "flatspace": "^1.0.13",
     "nostr-tools": "^2.7.0",
     "ws": "^8.18.0"
   },
