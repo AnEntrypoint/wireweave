@@ -2,7 +2,13 @@ const DEFAULT_RELAYS = [
   'wss://relay.damus.io',
   'wss://relay.primal.net',
   'wss://nos.lol',
-  'wss://relay.snort.social'
+  'wss://relay.snort.social',
+  'wss://relay.nostr.band',
+  'wss://nostr.wine',
+  'wss://relay.current.fyi',
+  'wss://offchain.pub',
+  'wss://nostr-pub.wellorder.net',
+  'wss://relay.0xchat.com'
 ];
 
 const trim = (set, max, keep) => {

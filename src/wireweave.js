@@ -18,7 +18,7 @@ export const createWireweave = ({
   xstate,
   storage = (typeof localStorage !== 'undefined' ? localStorage : null),
   extension = (typeof window !== 'undefined' ? window.nostr : null),
-  relays = ['wss://relay.damus.io', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.snort.social'],
+  relays = ['wss://relay.damus.io', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.nostr.band', 'wss://nostr.wine', 'wss://offchain.pub'],
   mediaDevices = (typeof navigator !== 'undefined' ? navigator.mediaDevices : null),
   WebSocketImpl = (typeof WebSocket !== 'undefined' ? WebSocket : null)
 } = {}) => {

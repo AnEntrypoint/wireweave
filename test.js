@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import WebSocket from 'ws';
 import * as NostrTools from 'nostr-tools';
-import { RelayPool, NostrAuth } from './src/index.js';
+import { RelayPool, NostrAuth, createDataSession, createFSM } from './src/index.js';
 
 const RELAY = 'wss://relay.damus.io';
 const TIMEOUT = 15000;
@@ -57,9 +57,33 @@ async function testRelay() {
   console.log('  relay: round-trip pass');
 }
 
+async function testDataSession() {
+  const xstate = await import('xstate').catch(() => null);
+  if (!xstate) { console.log('  data: skip (xstate not installed)'); return; }
+  const fsm = createFSM(xstate);
+  const auth = new NostrAuth({ nostrTools: NostrTools });
+  auth.generateKey();
+  const pool = new RelayPool({ relays: [], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket });
+  const session = createDataSession({ fsm, xstate, relayPool: pool, auth, namespace: 'wwtest' });
+  assert.ok(session);
+  assert.strictEqual(typeof session.connect, 'function');
+  assert.strictEqual(typeof session.disconnect, 'function');
+  assert.strictEqual(typeof session.send, 'function');
+  assert.strictEqual(typeof session.broadcast, 'function');
+  assert.strictEqual(typeof session.debug, 'function');
+  assert.strictEqual(session.peers.size, 0);
+  assert.strictEqual(session.broadcast(new Uint8Array([1, 2, 3])), 0);
+  assert.strictEqual(session.send('deadbeef', new Uint8Array([1])), false);
+  const dbg = session.debug();
+  assert.ok(Array.isArray(dbg.peers));
+  assert.strictEqual(dbg.peers.length, 0);
+  console.log('  data: shape pass');
+}
+
 async function main() {
   console.log('magicwand test.js');
   await testAuth();
+  await testDataSession();
   await testRelay();
   console.log('all pass');
 }
