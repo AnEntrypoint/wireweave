@@ -1,3 +1,5 @@
+import { dtag, parseDtag } from './dtag.js';
+
 export class Bans extends EventTarget {
   constructor({ relayPool, auth = null, roles = null }) {
     super();
@@ -17,7 +19,7 @@ export class Bans extends EventTarget {
   async ban(serverId, pubkey) {
     if (!this.auth?.isLoggedIn()) throw new Error('Not logged in');
     if (this.roles && !this.roles.isAdmin(serverId)) throw new Error('Insufficient permissions');
-    const dTag = 'zellous-ban:' + serverId + ':' + pubkey;
+    const dTag = dtag('ban', serverId, pubkey);
     const signed = await this.auth.sign({
       kind: 30078, created_at: Math.floor(Date.now() / 1000),
       tags: [['d', dTag], ['server', serverId]],
@@ -30,7 +32,7 @@ export class Bans extends EventTarget {
     if (!this.auth?.isLoggedIn()) throw new Error('Not logged in');
     if (this.roles && !this.roles.isAdmin(serverId)) throw new Error('Insufficient permissions');
     const expiry = Math.floor(Date.now() / 1000) + (minutes * 60);
-    const dTag = 'zellous-timeout:' + serverId + ':' + pubkey;
+    const dTag = dtag('timeout', serverId, pubkey);
     const signed = await this.auth.sign({
       kind: 30078, created_at: Math.floor(Date.now() / 1000),
       tags: [['d', dTag], ['server', serverId]],
@@ -43,7 +45,7 @@ export class Bans extends EventTarget {
     if (!this.auth?.isLoggedIn()) throw new Error('Not logged in');
     const signed = await this.auth.sign({
       kind: 30078, created_at: Math.floor(Date.now() / 1000),
-      tags: [['d', 'zellous-kick:' + pubkey]], content: ''
+      tags: [['d', dtag('kick', pubkey)]], content: ''
     });
     this.pool.publish(signed);
   }
@@ -61,13 +63,12 @@ export class Bans extends EventTarget {
         try {
           const dTag = event.tags.find(t => t[0] === 'd');
           if (!dTag?.[1]) return;
-          const parts = dTag[1].split(':');
-          const prefix = parts[0];
-          const pubkey = parts[parts.length - 1];
-          if (prefix !== 'zellous-ban' && prefix !== 'zellous-timeout') return;
+          const parsed = parseDtag(dTag[1]);
+          if (!parsed || (parsed.ns !== 'ban' && parsed.ns !== 'timeout')) return;
+          const pubkey = parsed.parts[parsed.parts.length - 1];
           const data = this.store.get(serverId) || { banned: [], timeouts: {} };
-          if (prefix === 'zellous-ban' && pubkey && !data.banned.includes(pubkey)) data.banned.push(pubkey);
-          else if (prefix === 'zellous-timeout' && pubkey) {
+          if (parsed.ns === 'ban' && pubkey && !data.banned.includes(pubkey)) data.banned.push(pubkey);
+          else if (parsed.ns === 'timeout' && pubkey) {
             const parsed = JSON.parse(event.content);
             if (parsed.expiry > Math.floor(Date.now() / 1000)) (data.timeouts = data.timeouts || {})[pubkey] = { expiry: parsed.expiry };
             else if (data.timeouts?.[pubkey]) delete data.timeouts[pubkey];
