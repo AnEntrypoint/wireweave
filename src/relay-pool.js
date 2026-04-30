@@ -36,7 +36,12 @@ export class RelayPool extends EventTarget {
 
   disconnect() {
     for (const [, r] of this.relays) {
-      if (r.ws) { r.ws.onclose = null; r.ws.onerror = null; try { r.ws.close(); } catch {} }
+      if (r.ws) {
+        r.ws.onclose = null; r.ws.onerror = null; r.ws.onopen = null; r.ws.onmessage = null;
+        if (typeof r.ws.removeAllListeners === 'function') r.ws.removeAllListeners();
+        if (typeof r.ws.on === 'function') r.ws.on('error', () => {});
+        try { r.ws.close(); } catch {}
+      }
     }
     this.relays.clear();
   }
