@@ -3,16 +3,15 @@ title: Home
 hero:
   heading: "wireweave"
   subheading: "nostr + WebRTC voice SDK"
-  body: "the voice and signaling layer for 247420 projects. nostr for discovery, WebRTC for the actual audio."
+  body: "wireweave is the networking layer pulled out of zellous. p2p voice, chat, channels, servers, ban/role/settings — every byte moves through public nostr relays. import, wire, ship."
   badges:
     - { label: "nostr" }
     - { label: "webrtc" }
     - { label: "sdk" }
     - { label: "voice" }
   ctas:
-    - { label: "GitHub", href: "https://github.com/AnEntrypoint/wireweave", primary: true }
-    - { label: "Install", href: "https://github.com/AnEntrypoint/wireweave#installation" }
-    - { label: "247420", href: "https://247420.xyz" }
+    - { label: "view on npm", href: "https://www.npmjs.com/package/wireweave", primary: true }
+    - { label: "github", href: "https://github.com/AnEntrypoint/wireweave" }
 features:
   heading: "Why wireweave"
   items:
@@ -23,7 +22,38 @@ quickstart:
   heading: Quick start
   lines:
     - { kind: "cmt", text: "# install" }
-    - { kind: "cmd", text: "npm i wireweave" }
+    - { kind: "cmd", text: "npm i wireweave nostr-tools" }
     - { kind: "cmt", text: "" }
     - { kind: "cmt", text: "# source" }
     - { kind: "cmd", text: "git clone https://github.com/AnEntrypoint/wireweave.git" }
+modules:
+  heading: Modules
+  items:
+    - { name: "voice", sub: "perfect negotiation, ice restart, track-stall detection, hub election.", meta: "rtc + sfu", href: "https://github.com/AnEntrypoint/wireweave/blob/master/src/voice.js" }
+    - { name: "chat", sub: "public channels, replies, reactions. kinds 42 + 7.", meta: "nip-28", href: "https://github.com/AnEntrypoint/wireweave/blob/master/src/chat.js" }
+    - { name: "servers", sub: "community events, invite links, owner rename, delete.", meta: "nip-72", href: "https://github.com/AnEntrypoint/wireweave/blob/master/src/servers.js" }
+    - { name: "channels", sub: "parameterized replaceable channel list per server.", meta: "30078", href: "https://github.com/AnEntrypoint/wireweave/blob/master/src/channels.js" }
+    - { name: "roles", sub: "role events keyed by server id + pubkey.", meta: "owner / admin / mod", href: "https://github.com/AnEntrypoint/wireweave/blob/master/src/roles.js" }
+    - { name: "bans", sub: "signed ban events with expiry. kick-from-voice on top.", meta: "ban / timeout / kick", href: "https://github.com/AnEntrypoint/wireweave/blob/master/src/bans.js" }
+    - { name: "settings", sub: "bitrate, embed allowlist, arbitrary key/value.", meta: "per-server", href: "https://github.com/AnEntrypoint/wireweave/blob/master/src/settings.js" }
+    - { name: "media", sub: "nip-98 auth upload to any blossom server. cdn mirror list.", meta: "blossom", href: "https://github.com/AnEntrypoint/wireweave/blob/master/src/media.js" }
+    - { name: "auth", sub: "extension first, local nsec fallback, stored in provided storage.", meta: "nip-07 / nsec", href: "https://github.com/AnEntrypoint/wireweave/blob/master/src/auth.js" }
+    - { name: "fsm", sub: "voice, peer, relay, sfu, camera — every state machine exported.", meta: "xstate v5", href: "https://github.com/AnEntrypoint/wireweave/blob/master/src/fsm.js" }
+install:
+  heading: Install
+  body: "wireweave ships as a single esm package. every subsystem is its own export so you tree-shake whatever you do not use."
+  code:
+    - { kind: "cmt", text: "# install" }
+    - { kind: "cmd", text: "npm i wireweave nostr-tools" }
+    - { kind: "cmt", text: "" }
+    - { kind: "cmt", text: "# browser" }
+    - { kind: "cmd", text: "import { createWireweave } from 'wireweave'" }
+    - { kind: "cmd", text: "const ww = createWireweave({ nostrTools, xstate, storage, relays });" }
+api:
+  heading: API
+  body: "no fake relays. no stubs. wireweave talks to live public nostr relays and live webrtc peers from the first line. the api is EventTarget all the way down so you can subscribe to any surface without owning the loop."
+  code:
+    - { kind: "cmt", text: "# connect to voice channel" }
+    - { kind: "cmd", text: "const voice = ww.ensureVoice();" }
+    - { kind: "cmd", text: "voice.addEventListener('peer-joined', e => console.log(e.detail));" }
+    - { kind: "cmd", text: "await voice.connect('general');" }

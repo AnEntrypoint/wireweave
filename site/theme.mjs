@@ -72,6 +72,59 @@ function Quickstart() {
   });
 }
 
+function CodeBlock({ lines }) {
+  if (!lines || !lines.length) return null;
+  const nodes = lines.map((l, i) => {
+    const isComment = l.kind === 'cmt';
+    return h('div', { key: 'q' + i, class: 'cli' },
+      h('span', { class: 'prompt' }, isComment ? '#' : '$'),
+      h('span', { class: 'cmd' }, l.text)
+    );
+  });
+  return h('div', { style: 'padding:16px 22px' }, ...nodes);
+}
+
+function Modules() {
+  if (!home || !home.modules || !home.modules.items || !home.modules.items.length) return null;
+  const rows = home.modules.items.map((it, i) => C.RowLink({
+    key: 'm' + i,
+    code: String(i + 1).padStart(2, '0'),
+    title: it.name,
+    sub: it.sub || '',
+    meta: it.meta || '',
+    href: it.href || '#'
+  }));
+  return C.Panel({
+    title: home.modules.heading || 'modules',
+    style: 'margin:8px',
+    children: rows
+  });
+}
+
+function Install() {
+  if (!home || !home.install) return null;
+  return C.Panel({
+    title: home.install.heading || 'install',
+    style: 'margin:8px',
+    children: [
+      home.install.body ? h('p', { style: 'margin:0 0 12px 0;color:var(--panel-text-2);max-width:60ch' }, home.install.body) : null,
+      home.install.code ? CodeBlock({ lines: home.install.code }) : null
+    ].filter(Boolean)
+  });
+}
+
+function Api() {
+  if (!home || !home.api) return null;
+  return C.Panel({
+    title: home.api.heading || 'api',
+    style: 'margin:8px',
+    children: [
+      home.api.body ? h('p', { style: 'margin:0 0 12px 0;color:var(--panel-text-2);max-width:60ch' }, home.api.body) : null,
+      home.api.code ? CodeBlock({ lines: home.api.code }) : null
+    ].filter(Boolean)
+  });
+}
+
 function Examples() {
   if (!home || !home.examples || !home.examples.items || !home.examples.items.length) return null;
   const rows = home.examples.items.map((it, i) => C.RowLink({
@@ -102,23 +155,26 @@ function Footer() {
 const navItems = (nav && nav.links ? nav.links : []).map(l => [String(l.label || ''), l.href]);
 
 const App = C.AppShell({
-  topbar: C.Topbar({
-    brand: '247420',
-    leaf: site.title || '',
-    items: navItems
-  }),
-  crumb: C.Crumb({
-    trail: ['247420'],
-    leaf: site.title || ''
-  }),
-  main: h('div', {},
-    Hero(),
-    Features(),
-    Quickstart(),
-    Examples()
-  ),
-  status: Footer()
-});
+   topbar: C.Topbar({
+     brand: '247420',
+     leaf: site.title || '',
+     items: navItems
+   }),
+   crumb: C.Crumb({
+     trail: ['247420'],
+     leaf: site.title || ''
+   }),
+   main: h('div', {},
+     Hero(),
+     Install(),
+     Api(),
+     Features(),
+     Modules(),
+     Quickstart(),
+     Examples()
+   ),
+   status: Footer()
+ });
 
 applyDiff(document.getElementById('app'), [App]);
 `;

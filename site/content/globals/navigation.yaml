@@ -1,5 +1,9 @@
 links:
-  - label: 247420
-    href: https://247420.xyz
+  - label: docs
+    href: "#docs"
+  - label: api
+    href: "#api"
+  - label: install
+    href: "#install"
   - label: GitHub
-    href: https://github.com/AnEntrypoint
+    href: https://github.com/AnEntrypoint/wireweave
