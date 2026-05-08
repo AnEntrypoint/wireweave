@@ -3,19 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>wireweave — nostr + WebRTC voice SDK</title>
-  <meta name="description" content="the voice and signaling layer for 247420 projects. nostr for discovery, WebRTC for the actual audio." />
+  <title>wireweave — nostr + webrtc. the networking layer for 247420.</title>
+  <meta name="description" content="wireweave is the networking layer pulled out of zellous. p2p voice, chat, channels, servers, ban/role/settings — every byte moves through public nostr relays. import, wire, ship." />
   <meta property="og:title" content="wireweave" />
-  <meta property="og:description" content="the voice and signaling layer for 247420 projects. nostr for discovery, WebRTC for the actual audio." />
-  <meta property="og:url" content="https://anentrypoint.github.io/wireweave" />
-  <link rel="canonical" href="https://anentrypoint.github.io/wireweave" />
+  <meta property="og:description" content="wireweave is the networking layer pulled out of zellous. p2p voice, chat, channels, servers, ban/role/settings — every byte moves through public nostr relays. import, wire, ship." />
+  <meta property="og:url" content="https://anentrypoint.github.io/wireweave/" />
+  <link rel="canonical" href="https://anentrypoint.github.io/wireweave/" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%8C%87%3C/text%3E%3C/svg%3E" />
   <script type="importmap">{"imports":{"anentrypoint-design":"https://unpkg.com/anentrypoint-design@latest/dist/247420.js"}}</script>
   <style>html,body{margin:0;padding:0}body{background:var(--app-bg,#FBF6EB);color:var(--ink,#1F1B16);font-family:var(--ff-ui,'Nunito',system-ui,sans-serif)}</style>
 </head>
 <body>
   <div id="app"></div>
-  <script type="application/json" id="__site__">{"site":{"title":"wireweave","tagline":"nostr + WebRTC voice SDK","description":"the voice and signaling layer for 247420 projects. nostr for discovery, WebRTC for the actual audio.","repo":"https://github.com/AnEntrypoint/wireweave","url":"https://anentrypoint.github.io/wireweave","year":2026,"keywords":["nostr","webrtc","sdk","247420","anentrypoint"],"accent_from":"#f97583","accent_to":"#ffa657","glyph":"⌇","code":"031","category":"voice"},"nav":{"links":[{"label":247420,"href":"https://247420.xyz"},{"label":"GitHub","href":"https://github.com/AnEntrypoint"}]},"home":{"id":"home","title":"Home","hero":{"heading":"wireweave","subheading":"nostr + WebRTC voice SDK","body":"the voice and signaling layer for 247420 projects. nostr for discovery, WebRTC for the actual audio.","badges":[{"label":"nostr"},{"label":"webrtc"},{"label":"sdk"},{"label":"voice"}],"ctas":[{"label":"GitHub","href":"https://github.com/AnEntrypoint/wireweave","primary":true},{"label":"Install","href":"https://github.com/AnEntrypoint/wireweave#installation"},{"label":"247420","href":"https://247420.xyz"}]},"features":{"heading":"Why wireweave","items":[{"name":"nostr","desc":"flagship trait of wireweave."},{"name":"webrtc","desc":"core capability of wireweave."},{"name":"sdk","desc":"core capability of wireweave."}]},"quickstart":{"heading":"Quick start","lines":[{"kind":"cmt","text":"# install"},{"kind":"cmd","text":"npm i wireweave"},{"kind":"cmt","text":""},{"kind":"cmt","text":"# source"},{"kind":"cmd","text":"git clone https://github.com/AnEntrypoint/wireweave.git"}]}}}</script>
+  <script type="application/json" id="__site__">{"site":{"title":"wireweave","tagline":"nostr + webrtc. the networking layer for 247420.","description":"wireweave is the networking layer pulled out of zellous. p2p voice, chat, channels, servers, ban/role/settings — every byte moves through public nostr relays. import, wire, ship.","repo":"https://github.com/AnEntrypoint/wireweave","url":"https://anentrypoint.github.io/wireweave/","year":2026,"accent_from":"#247420","accent_to":"#3A9A34","glyph":"⌇","code":"031","category":"voice"},"nav":{"links":[{"label":"docs","href":"#docs"},{"label":"api","href":"#api"},{"label":"install","href":"#install"},{"label":"GitHub","href":"https://github.com/AnEntrypoint/wireweave"}]},"home":{"id":"home","title":"Home","hero":{"heading":"wireweave","subheading":"nostr + WebRTC voice SDK","body":"wireweave is the networking layer pulled out of zellous. p2p voice, chat, channels, servers, ban/role/settings — every byte moves through public nostr relays. import, wire, ship.","badges":[{"label":"nostr"},{"label":"webrtc"},{"label":"sdk"},{"label":"voice"}],"ctas":[{"label":"view on npm","href":"https://www.npmjs.com/package/wireweave","primary":true},{"label":"github","href":"https://github.com/AnEntrypoint/wireweave"}]},"features":{"heading":"Why wireweave","items":[{"name":"nostr","desc":"flagship trait of wireweave."},{"name":"webrtc","desc":"core capability of wireweave."},{"name":"sdk","desc":"core capability of wireweave."}]},"quickstart":{"heading":"Quick start","lines":[{"kind":"cmt","text":"# install"},{"kind":"cmd","text":"npm i wireweave nostr-tools"},{"kind":"cmt","text":""},{"kind":"cmt","text":"# source"},{"kind":"cmd","text":"git clone https://github.com/AnEntrypoint/wireweave.git"}]},"modules":{"heading":"Modules","items":[{"name":"voice","sub":"perfect negotiation, ice restart, track-stall detection, hub election.","meta":"rtc + sfu","href":"https://github.com/AnEntrypoint/wireweave/blob/master/src/voice.js"},{"name":"chat","sub":"public channels, replies, reactions. kinds 42 + 7.","meta":"nip-28","href":"https://github.com/AnEntrypoint/wireweave/blob/master/src/chat.js"},{"name":"servers","sub":"community events, invite links, owner rename, delete.","meta":"nip-72","href":"https://github.com/AnEntrypoint/wireweave/blob/master/src/servers.js"},{"name":"channels","sub":"parameterized replaceable channel list per server.","meta":"30078","href":"https://github.com/AnEntrypoint/wireweave/blob/master/src/channels.js"},{"name":"roles","sub":"role events keyed by server id + pubkey.","meta":"owner / admin / mod","href":"https://github.com/AnEntrypoint/wireweave/blob/master/src/roles.js"},{"name":"bans","sub":"signed ban events with expiry. kick-from-voice on top.","meta":"ban / timeout / kick","href":"https://github.com/AnEntrypoint/wireweave/blob/master/src/bans.js"},{"name":"settings","sub":"bitrate, embed allowlist, arbitrary key/value.","meta":"per-server","href":"https://github.com/AnEntrypoint/wireweave/blob/master/src/settings.js"},{"name":"media","sub":"nip-98 auth upload to any blossom server. cdn mirror list.","meta":"blossom","href":"https://github.com/AnEntrypoint/wireweave/blob/master/src/media.js"},{"name":"auth","sub":"extension first, local nsec fallback, stored in provided storage.","meta":"nip-07 / nsec","href":"https://github.com/AnEntrypoint/wireweave/blob/master/src/auth.js"},{"name":"fsm","sub":"voice, peer, relay, sfu, camera — every state machine exported.","meta":"xstate v5","href":"https://github.com/AnEntrypoint/wireweave/blob/master/src/fsm.js"}]},"install":{"heading":"Install","body":"wireweave ships as a single esm package. every subsystem is its own export so you tree-shake whatever you do not use.","code":[{"kind":"cmt","text":"# install"},{"kind":"cmd","text":"npm i wireweave nostr-tools"},{"kind":"cmt","text":""},{"kind":"cmt","text":"# browser"},{"kind":"cmd","text":"import { createWireweave } from 'wireweave'"},{"kind":"cmd","text":"const ww = createWireweave({ nostrTools, xstate, storage, relays });"}]},"api":{"heading":"API","body":"no fake relays. no stubs. wireweave talks to live public nostr relays and live webrtc peers from the first line. the api is EventTarget all the way down so you can subscribe to any surface without owning the loop.","code":[{"kind":"cmt","text":"# connect to voice channel"},{"kind":"cmd","text":"const voice = ww.ensureVoice();"},{"kind":"cmd","text":"voice.addEventListener('peer-joined', e =\u003e console.log(e.detail));"},{"kind":"cmd","text":"await voice.connect('general');"}]}}}</script>
   <script type="module">
 import { h, applyDiff, installStyles, components as C } from 'anentrypoint-design';
 installStyles();
@@ -75,6 +75,59 @@ function Quickstart() {
   });
 }
 
+function CodeBlock({ lines }) {
+  if (!lines || !lines.length) return null;
+  const nodes = lines.map((l, i) => {
+    const isComment = l.kind === 'cmt';
+    return h('div', { key: 'q' + i, class: 'cli' },
+      h('span', { class: 'prompt' }, isComment ? '#' : '$'),
+      h('span', { class: 'cmd' }, l.text)
+    );
+  });
+  return h('div', { style: 'padding:16px 22px' }, ...nodes);
+}
+
+function Modules() {
+  if (!home || !home.modules || !home.modules.items || !home.modules.items.length) return null;
+  const rows = home.modules.items.map((it, i) => C.RowLink({
+    key: 'm' + i,
+    code: String(i + 1).padStart(2, '0'),
+    title: it.name,
+    sub: it.sub || '',
+    meta: it.meta || '',
+    href: it.href || '#'
+  }));
+  return C.Panel({
+    title: home.modules.heading || 'modules',
+    style: 'margin:8px',
+    children: rows
+  });
+}
+
+function Install() {
+  if (!home || !home.install) return null;
+  return C.Panel({
+    title: home.install.heading || 'install',
+    style: 'margin:8px',
+    children: [
+      home.install.body ? h('p', { style: 'margin:0 0 12px 0;color:var(--panel-text-2);max-width:60ch' }, home.install.body) : null,
+      home.install.code ? CodeBlock({ lines: home.install.code }) : null
+    ].filter(Boolean)
+  });
+}
+
+function Api() {
+  if (!home || !home.api) return null;
+  return C.Panel({
+    title: home.api.heading || 'api',
+    style: 'margin:8px',
+    children: [
+      home.api.body ? h('p', { style: 'margin:0 0 12px 0;color:var(--panel-text-2);max-width:60ch' }, home.api.body) : null,
+      home.api.code ? CodeBlock({ lines: home.api.code }) : null
+    ].filter(Boolean)
+  });
+}
+
 function Examples() {
   if (!home || !home.examples || !home.examples.items || !home.examples.items.length) return null;
   const rows = home.examples.items.map((it, i) => C.RowLink({
@@ -105,23 +158,26 @@ function Footer() {
 const navItems = (nav && nav.links ? nav.links : []).map(l => [String(l.label || ''), l.href]);
 
 const App = C.AppShell({
-  topbar: C.Topbar({
-    brand: '247420',
-    leaf: site.title || '',
-    items: navItems
-  }),
-  crumb: C.Crumb({
-    trail: ['247420'],
-    leaf: site.title || ''
-  }),
-  main: h('div', {},
-    Hero(),
-    Features(),
-    Quickstart(),
-    Examples()
-  ),
-  status: Footer()
-});
+   topbar: C.Topbar({
+     brand: '247420',
+     leaf: site.title || '',
+     items: navItems
+   }),
+   crumb: C.Crumb({
+     trail: ['247420'],
+     leaf: site.title || ''
+   }),
+   main: h('div', {},
+     Hero(),
+     Install(),
+     Api(),
+     Features(),
+     Modules(),
+     Quickstart(),
+     Examples()
+   ),
+   status: Footer()
+ });
 
 applyDiff(document.getElementById('app'), [App]);
 </script>
