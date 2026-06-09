@@ -69,8 +69,8 @@ export class Bans extends EventTarget {
           const data = this.store.get(serverId) || { banned: [], timeouts: {} };
           if (parsed.ns === 'ban' && pubkey && !data.banned.includes(pubkey)) data.banned.push(pubkey);
           else if (parsed.ns === 'timeout' && pubkey) {
-            const parsed = JSON.parse(event.content);
-            if (parsed.expiry > Math.floor(Date.now() / 1000)) (data.timeouts = data.timeouts || {})[pubkey] = { expiry: parsed.expiry };
+            const body = JSON.parse(event.content);
+            if (body.expiry > Math.floor(Date.now() / 1000)) (data.timeouts = data.timeouts || {})[pubkey] = { expiry: body.expiry };
             else if (data.timeouts?.[pubkey]) delete data.timeouts[pubkey];
           }
           this.store.set(serverId, data);

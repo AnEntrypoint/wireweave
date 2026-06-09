@@ -72,6 +72,7 @@ export class DataSession extends EventTarget {
     this._stopHeartbeat();
     for (const pk of Array.from(this.peers.keys())) this._closePeer(pk);
     this.peers.clear();
+    for (const pk of Object.keys(this.retrySchedule)) this._cancelReconnect(pk);
     if (this.roomId) {
       this.pool.unsubscribe('data-presence-' + this.roomId);
       this.pool.unsubscribe('data-signals-' + this.roomId);

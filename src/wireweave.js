@@ -11,6 +11,7 @@ import { createRoles } from './roles.js';
 import { createSettings } from './settings.js';
 import { createMedia } from './media.js';
 import { createPages } from './pages.js';
+import { createDM } from './dm.js';
 import { register } from './debug.js';
 
 export const createWireweave = ({
@@ -76,10 +77,21 @@ export const createWireweave = ({
 
   const setCurrentChannel = (id) => { currentChannelId = id; if (id) chat.loadHistory(id); };
 
+  // DM is lazy: nip44 encryption requires a privkey-backed signer (not extension)
+  // and nostr-tools built with nip44. Constructing it eagerly would throw for
+  // builds without nip44, so we defer to first use — mirrors ensureVoice.
+  let dm = null;
+  const ensureDM = () => {
+    if (!dm) dm = createDM({ relayPool: pool, auth, nostrTools });
+    return dm;
+  };
+
   const api = {
     pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat,
     get voice() { return voice; },
     ensureVoice,
+    get dm() { return dm; },
+    ensureDM,
     setCurrentChannel,
     get currentChannelId() { return currentChannelId; },
     get currentServerId() { return servers.currentServerId; }

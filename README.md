@@ -27,9 +27,25 @@ ww.auth.loadFromStorage() || ww.auth.generateKey();
 ww.servers.init();
 ```
 
-`ww` exposes: `pool`, `auth`, `fsm`, `message`, `bans`, `roles`, `settings`, `pages`, `media`, `channels`, `servers`, `chat`, `voice` (lazy via `ensureVoice()`), `setCurrentChannel()`.
+`ww` exposes: `pool`, `auth`, `fsm`, `message`, `bans`, `roles`, `settings`, `pages`, `media`, `channels`, `servers`, `chat`, `voice` (lazy via `ensureVoice()`), `dm` (lazy via `ensureDM()`), `setCurrentChannel()`, `currentChannelId`, `currentServerId`.
 
 every submodule is an `EventTarget`. subscribe with `addEventListener('event', ...)`.
+
+`message` is a standalone in-memory `MessageBus` (bounded ring + typed handler dispatch). It is provided for apps that want a local message store; no other wireweave module depends on it, so ignore it if you don't need it.
+
+### node / non-browser environments
+
+`createWireweave` and `NostrAuth`/`Servers` need a `storage` adapter outside the browser — pass `{ getItem, setItem, removeItem }`. Without it `createWireweave` throws `wireweave: storage required` up front (in the browser it defaults to `localStorage`). On-relay `d`-tags use a frozen `zellous-` prefix and storage keys use `zn_*`; these are published wire/storage contracts kept stable across the rename to wireweave — do not change them without a migration path.
+
+## direct messages (encrypted)
+
+```js
+const dm = ww.ensureDM();              // lazy: needs nostr-tools built with nip44
+dm.subscribe(({ peer, plaintext }) => console.log(peer, plaintext));
+await dm.send(peerPubkey, 'hello');
+```
+
+**Caveat:** nip44 encryption derives a conversation key from your **private key**, so DM requires a privkey-backed signer (`generateKey`/`importKey`). It does **not** work with extension signing (NIP-07), which never exposes the privkey — `dm.send` throws `DM: privkey required` in that case.
 
 ## modules
 
