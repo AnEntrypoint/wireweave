@@ -277,6 +277,143 @@ async function testCompose() {
   console.log('  compose: pass');
 }
 
+async function testChat() {
+  const auth = newAuth();
+  const pool = mockPool();
+  const serverId = newAuth().pubkey + ':srv1';
+  const channelId = 'general';
+  const chat = createChat({ relayPool: pool, auth, getChannelContext: () => ({ channelId, serverId }), isAdmin: () => false });
+  await chat.send('hello');
+  assert.strictEqual(pool.published.length, 1, 'send published');
+  assert.strictEqual(pool.published[0].kind, 42);
+  assert.strictEqual(chat.messages.length, 1);
+  const sentId = chat.messages[0].id;
+  // unknown id is no-op (no publish)
+  await chat.deleteMessage('nonexistent');
+  assert.strictEqual(pool.published.length, 1, 'no-op on unknown id');
+  // author can delete own message
+  await chat.deleteMessage(sentId);
+  assert.strictEqual(pool.published.length, 2, 'author delete published kind:5');
+  assert.ok(pool.published[1].kind === 5);
+  // non-author non-admin throws
+  const other = newAuth();
+  const otherChat = createChat({ relayPool: pool, auth: other, getChannelContext: () => ({ channelId, serverId }), isAdmin: () => false });
+  otherChat.messages = [{ id: 'x', userId: auth.pubkey, content: 'y', timestamp: 0, tags: [] }];
+  await assert.rejects(() => otherChat.deleteMessage('x'), /not author or admin/);
+  // admin can delete
+  const adminChat = createChat({ relayPool: pool, auth: other, getChannelContext: () => ({ channelId, serverId }), isAdmin: () => true });
+  adminChat.messages = [{ id: 'z', userId: auth.pubkey, content: 'y', timestamp: 0, tags: [] }];
+  await adminChat.deleteMessage('z');
+  assert.ok(pool.published.some(e => e.kind === 5 && e.tags?.[0]?.[1] === 'z'));
+  console.log('  chat: pass');
+}
+
+async function testChannelsMutations() {
+  const owner = newAuth();
+  const serverId = owner.pubkey + ':srv1';
+  const pool = mockPool();
+  const ch = createChannels({ relayPool: pool, auth: owner });
+  ch.load(serverId); ch.pool.eose('channels-' + serverId);
+  const before = ch.channels.length;
+  await ch.create('testing', 'text', 'general');
+  assert.strictEqual(ch.channels.length, before + 1);
+  const newCh = ch.channels.find(c => c.name === 'testing');
+  assert.ok(newCh, 'channel created');
+  await ch.rename(newCh.id, 'renamed');
+  assert.strictEqual(ch.channels.find(c => c.id === newCh.id).name, 'renamed');
+  await ch.update(newCh.id, { topic: 'test topic' });
+  assert.strictEqual(ch.channels.find(c => c.id === newCh.id).topic, 'test topic');
+  await ch.remove(newCh.id);
+  assert.ok(!ch.channels.find(c => c.id === newCh.id), 'channel removed');
+  // non-owner throws
+  const other = createChannels({ relayPool: pool, auth: newAuth() });
+  other.serverId = serverId; other.channels = ch.channels.slice();
+  await assert.rejects(() => other.create('x'), /owner only/);
+  console.log('  channels mutations: pass');
+}
+
+function testBansFull() {
+  const owner = newAuth();
+  const serverA = owner.pubkey + ':srvA';
+  const serverB = owner.pubkey + ':srvB';
+  const pool = mockPool();
+  const bans = createBans({ relayPool: pool, auth: owner });
+  bans.subscribe(serverA);
+  bans.subscribe(serverA); // idempotent — should not double-subscribe
+  assert.strictEqual(pool.subs.size, 1, 'idempotent subscribe');
+  bans.subscribe(serverB);
+  assert.strictEqual(pool.subs.size, 2, 'two servers tracked');
+  // kick event on serverA
+  const kicked = newAuth().pubkey;
+  pool.feed('bans-' + serverA, { pubkey: owner.pubkey, tags: [['d', dtag('kick', serverA, kicked)], ['server', serverA]], content: '' });
+  assert.ok(bans.isKicked(serverA, kicked), 'kicked on serverA');
+  assert.ok(!bans.isKicked(serverB, kicked), 'no bleed to serverB');
+  // unsubscribe removes sub
+  bans.unsubscribe(serverA);
+  assert.strictEqual(pool.subs.size, 1, 'serverA sub removed');
+  console.log('  bans full: pass');
+}
+
+function testRolesRelay() {
+  const owner = newAuth();
+  const serverId = owner.pubkey + ':srv1';
+  const member = newAuth();
+  const pool = mockPool();
+  const roles = createRoles({ relayPool: pool, auth: owner });
+  roles.subscribe(serverId);
+  roles.subscribe(serverId); // idempotent
+  assert.strictEqual(pool.subs.size, 1, 'idempotent subscribe');
+  let fired = false;
+  roles.addEventListener('updated', () => { fired = true; });
+  // feed a kind:30078 roles event granting member admin
+  pool.feed('roles-' + serverId, {
+    pubkey: owner.pubkey,
+    tags: [['d', dtag('roles', serverId)]],
+    content: JSON.stringify({ admins: [member.pubkey], mods: [] })
+  });
+  assert.ok(fired, 'updated event fired');
+  const memberRoles = createRoles({ relayPool: pool, auth: member });
+  memberRoles.store.set(serverId, roles.store.get(serverId));
+  assert.strictEqual(memberRoles.getRole(serverId, member.pubkey), 'admin');
+  assert.ok(memberRoles.isAdmin(serverId));
+  roles.unsubscribe(serverId);
+  assert.strictEqual(pool.subs.size, 0, 'unsubscribed');
+  console.log('  roles relay: pass');
+}
+
+async function testSettingsFull() {
+  const owner = newAuth();
+  const serverId = owner.pubkey + ':srv1';
+  const pool = mockPool();
+  const roles = createRoles({ relayPool: pool, auth: owner });
+  const settings = createSettings({ relayPool: pool, auth: owner, roles });
+  settings.subscribe(serverId);
+  settings.subscribe(serverId); // idempotent
+  assert.strictEqual(pool.subs.size, 1, 'idempotent subscribe');
+  // setBitrate clamps and publishes
+  const clamped = await settings.setBitrate(serverId, 30000);
+  assert.strictEqual(clamped, 24000, 'clamped to nearest valid bitrate');
+  assert.ok(pool.published.length > 0, 'publish fired');
+  assert.strictEqual(settings.getBitrate(serverId), 24000);
+  // setEmbedAllowlist
+  await settings.setEmbedAllowlist(serverId, 'example.com, *.test.org, *');
+  assert.ok(settings.isOriginAllowed(serverId, 'https://example.com'), 'exact domain');
+  assert.ok(settings.isOriginAllowed(serverId, 'https://sub.test.org'), 'wildcard domain');
+  // subscribe feed updates store
+  let updated = false;
+  settings.addEventListener('updated', () => { updated = true; });
+  pool.feed('settings-' + serverId, {
+    pubkey: owner.pubkey,
+    tags: [['d', dtag('settings', serverId)]],
+    content: JSON.stringify({ opusBitrate: 48000 })
+  });
+  assert.ok(updated, 'updated event fired');
+  assert.strictEqual(settings.getBitrate(serverId), 48000, 'store updated from relay');
+  settings.unsubscribe(serverId);
+  assert.strictEqual(pool.subs.size, 0, 'unsubscribed');
+  console.log('  settings full: pass');
+}
+
 async function main() {
   console.log('magicwand test.js');
   await testAuth();
@@ -292,6 +429,11 @@ async function main() {
   await testCompose();
   await testDataSession();
   await testDM();
+  await testChat();
+  await testChannelsMutations();
+  testBansFull();
+  testRolesRelay();
+  await testSettingsFull();
   await testRelay();
   console.log('all pass');
 }
