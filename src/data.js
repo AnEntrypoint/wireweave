@@ -34,7 +34,8 @@ export class DataSession extends EventTarget {
   }
 
   _initActor() {
-    const machine = this.fsm.dataMachine || this.fsm.voiceMachine;
+    const machine = this.fsm.dataMachine;
+    if (!machine) throw new Error('DataSession: fsm.dataMachine missing');
     this.actor = this.xstate.createActor(machine);
     this.actor.subscribe((snap) => this.dispatchEvent(new CustomEvent('state', { detail: { value: snap.value } })));
     this.actor.start();

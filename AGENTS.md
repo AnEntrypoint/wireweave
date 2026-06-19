@@ -33,3 +33,5 @@ multi-relay pool where some sockets are still connecting at disconnect time.
 
 - 2026-04-30: checked 2 items, removed 0, refined 2 (storage-required, multi-relay-tests — recall missed, ingested refined versions).
 - 2026-04-30: checked 3 items (storage-required, multi-relay-tests, ws-close-CONNECTING), removed 0, refined 3 — all three have no recall hits, kept in AGENTS.md, ingested refined versions to rs-learn.
+
+@.gm/next-step.md
