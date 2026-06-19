@@ -12,6 +12,7 @@ import { createSettings } from './settings.js';
 import { createMedia } from './media.js';
 import { createPages } from './pages.js';
 import { createDM } from './dm.js';
+import { createDataSession } from './data.js';
 import { register } from './debug.js';
 
 export const createWireweave = ({
@@ -86,12 +87,24 @@ export const createWireweave = ({
     return dm;
   };
 
+  // DataSession is lazy for the same reason as DM: requires xstate and FSM.
+  // onSwitch accumulates subscriptions across all visited servers (idempotent
+  // Map pattern) — no unsubscribe on server switch by design so offline data
+  // from prior servers remains cached.
+  let data = null;
+  const ensureData = ({ room = '', displayName = 'Guest', namespace = '' } = {}) => {
+    if (!data) data = createDataSession({ fsm, xstate, relayPool: pool, auth, namespace });
+    return data;
+  };
+
   const api = {
     pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat,
     get voice() { return voice; },
     ensureVoice,
     get dm() { return dm; },
     ensureDM,
+    get data() { return data; },
+    ensureData,
     setCurrentChannel,
     get currentChannelId() { return currentChannelId; },
     get currentServerId() { return servers.currentServerId; }

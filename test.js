@@ -414,6 +414,139 @@ async function testSettingsFull() {
   console.log('  settings full: pass');
 }
 
+async function testServersLifecycle() {
+  const auth = newAuth();
+  const storage = memStore();
+  const pool = mockPool();
+  const servers = createServers({ relayPool: pool, auth, storage });
+  // create() adds server + calls switchTo
+  let switched = null;
+  servers.addEventListener('switched', (e) => { switched = e.detail.serverId; });
+  await servers.create('My Server', '#ff0000');
+  assert.strictEqual(servers.servers.length, 1, 'server created');
+  assert.strictEqual(servers.servers[0].name, 'My Server');
+  assert.ok(switched, 'switchTo fired after create');
+  const srvId = servers.servers[0].id;
+  assert.strictEqual(storage.getItem('zn_lastServer'), srvId, 'lastServer stored');
+  // rename
+  await servers.rename(srvId, 'Renamed', '#00ff00');
+  assert.strictEqual(servers.servers[0].name, 'Renamed');
+  assert.ok(pool.published.some(e => e.kind === 34550), 'rename published kind:34550');
+  // join foreign server
+  const foreignId = newAuth().pubkey + ':foreign';
+  await servers.join(foreignId);
+  assert.strictEqual(servers.servers.length, 2, 'join added server');
+  // leave removes it
+  await servers.delete(foreignId);
+  assert.strictEqual(servers.servers.length, 1, 'leave removed server');
+  // saveOrder + sorted
+  const srv2 = newAuth().pubkey + ':s2';
+  servers.servers = [servers.servers[0], { id: srv2, name: 'S2', iconColor: '#fff' }];
+  servers.saveOrder([srv2, srvId]);
+  const ord = servers.sorted();
+  assert.strictEqual(ord[0].id, srv2, 'sorted respects order');
+  console.log('  servers lifecycle: pass');
+}
+
+async function testDMSubscribe() {
+  const a = new NostrAuth({ nostrTools: NostrTools }); a.generateKey();
+  if (!NostrTools.nip44) { console.log('  dm subscribe: skip (nip44 missing)'); return; }
+  const b = new NostrAuth({ nostrTools: NostrTools });
+  b.generateKey();
+  const pool = mockPool();
+  const dmA = new DM({ relayPool: pool, auth: a, nostrTools: NostrTools });
+  const dmB = new DM({ relayPool: pool, auth: b, nostrTools: NostrTools });
+  // subscribe B, feed signed event from A
+  let received = null;
+  const subId = dmB.subscribe((msg) => { received = msg; });
+  const signed = await dmA.send(b.pubkey, 'hello-sub');
+  pool.feed(subId, signed);
+  assert.ok(received, 'onMessage fired');
+  assert.strictEqual(received.plaintext, 'hello-sub');
+  assert.strictEqual(received.peer, a.pubkey);
+  // unsubscribe then feed: no callback
+  dmB.unsubscribe();
+  received = null;
+  pool.feed(subId, signed);
+  assert.strictEqual(received, null, 'no callback after unsubscribe');
+  // bad ciphertext emits error event, not throw
+  const dmB2 = new DM({ relayPool: pool, auth: b, nostrTools: NostrTools });
+  let errFired = false;
+  dmB2.addEventListener('error', () => { errFired = true; });
+  const subId2 = dmB2.subscribe(() => {});
+  pool.feed(subId2, { pubkey: a.pubkey, kind: 14, tags: [['p', b.pubkey]], content: 'not-valid-ciphertext', id: 'x', sig: 'y' });
+  assert.ok(errFired, 'error event emitted on bad ciphertext');
+  console.log('  dm subscribe: pass');
+}
+
+async function testPagesFull() {
+  const owner = newAuth();
+  const serverId = owner.pubkey + ':srv1';
+  const pool = mockPool();
+  const { createPages } = await import('./src/pages.js');
+  const roles = createRoles({ relayPool: pool, auth: owner });
+  const pages = createPages({ relayPool: pool, auth: owner, roles });
+  // subscribe + feed event
+  pages.subscribe(serverId);
+  pages.subscribe(serverId); // idempotent
+  assert.strictEqual(pool.subs.size, 1, 'idempotent subscribe');
+  let updated = false;
+  pages.addEventListener('updated', () => { updated = true; });
+  pool.feed('pages-' + serverId, {
+    pubkey: owner.pubkey,
+    tags: [['d', dtag('page', serverId) + ':home']],
+    content: JSON.stringify({ title: 'Home', html: '<b>hi</b>' })
+  });
+  assert.ok(updated, 'updated event fired');
+  assert.strictEqual(pages.getPages(serverId).length, 1, 'page stored');
+  // deletePage via relay event
+  pool.feed('pages-' + serverId, {
+    pubkey: owner.pubkey,
+    tags: [['d', dtag('page', serverId) + ':home']],
+    content: JSON.stringify({ deleted: true })
+  });
+  assert.strictEqual(pages.getPages(serverId).length, 0, 'page deleted via event');
+  // non-admin publish throws
+  const other = createPages({ relayPool: pool, auth: newAuth(), roles: createRoles({ relayPool: pool, auth: newAuth() }) });
+  await assert.rejects(() => other.publish(serverId, 'slug', 'Title', '<p>x</p>'), /Admin only/);
+  // unsubscribe
+  pages.unsubscribe(serverId);
+  assert.strictEqual(pool.subs.size, 0, 'unsubscribed');
+  console.log('  pages full: pass');
+}
+
+async function testComposeFull() {
+  const xstate = await import('xstate').catch(() => null);
+  if (!xstate) { console.log('  compose full: skip (xstate not installed)'); return; }
+  const ww = createWireweave({ nostrTools: NostrTools, xstate, storage: memStore(), relays: [], WebSocketImpl: WebSocket });
+  // setCurrentChannel updates getter
+  ww.setCurrentChannel('test-ch');
+  assert.strictEqual(ww.currentChannelId, 'test-ch', 'currentChannelId getter');
+  // ensureData exposed
+  assert.strictEqual(typeof ww.ensureData, 'function', 'ensureData exposed');
+  assert.ok('data' in ww, 'data getter exposed');
+  ww.auth.generateKey();
+  const ds = ww.ensureData({ namespace: 'test' });
+  assert.strictEqual(typeof ds.connect, 'function');
+  assert.strictEqual(typeof ds.disconnect, 'function');
+  assert.strictEqual(ww.ensureData(), ds, 'ensureData idempotent');
+  assert.strictEqual(typeof ww.ensureVoice, 'function', 'ensureVoice callable');
+  console.log('  compose full: pass');
+}
+
+async function testRelayDisconnectConnecting() {
+  // Exercises the ws-close-CONNECTING fix documented in AGENTS.md
+  const pool = new RelayPool({ relays: RELAYS, verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket });
+  pool.connect();
+  // disconnect immediately before any socket reaches OPEN state
+  pool.disconnect();
+  // If the fix is absent, Node emits an unhandled EventEmitter error that crashes
+  // the process before this assertion can run. Give it 500ms to confirm no crash.
+  await new Promise(r => setTimeout(r, 500));
+  assert.ok(true, 'no crash on immediate disconnect after connect');
+  console.log('  relay disconnect-connecting: pass');
+}
+
 async function main() {
   console.log('magicwand test.js');
   await testAuth();
@@ -434,6 +567,11 @@ async function main() {
   testBansFull();
   testRolesRelay();
   await testSettingsFull();
+  await testServersLifecycle();
+  await testDMSubscribe();
+  await testPagesFull();
+  await testComposeFull();
+  await testRelayDisconnectConnecting();
   await testRelay();
   console.log('all pass');
 }
