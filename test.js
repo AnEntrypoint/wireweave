@@ -547,6 +547,47 @@ async function testRelayDisconnectConnecting() {
   console.log('  relay disconnect-connecting: pass');
 }
 
+function fakeWSImpl() {
+  class FakeWS {
+    constructor(url) { this.url = url; this.readyState = 0; this.onopen = this.onclose = this.onerror = this.onmessage = null; FakeWS.created.push(this); }
+    send() {}
+    close() { this.readyState = 3; }
+    open() { this.readyState = 1; this.onopen && this.onopen(); }
+    triggerClose() { this.readyState = 3; this.onclose && this.onclose(); }
+  }
+  FakeWS.created = [];
+  return FakeWS;
+}
+
+async function testRelayReconnectCancel() {
+  const WS = fakeWSImpl();
+  const pool = new RelayPool({ relays: ['wss://a'], WebSocketImpl: WS });
+  pool.connect();
+  WS.created[0].open();
+  WS.created[0].triggerClose();           // schedules a reconnect timer
+  assert.strictEqual(pool._reconnectTimers.size, 1, 'reconnect timer armed after close');
+  pool.disconnect();                       // must cancel it
+  assert.strictEqual(pool._reconnectTimers.size, 0, 'disconnect cleared timers');
+  assert.strictEqual(pool._closed, true, 'closed flag set');
+  await new Promise(r => setTimeout(r, 1600));
+  assert.strictEqual(WS.created.length, 1, 'no relay resurrected after disconnect');
+  console.log('  relay reconnect-cancel: pass');
+}
+
+async function testRelayPendingCapTtl() {
+  const WS = fakeWSImpl();
+  const pool = new RelayPool({ relays: ['wss://a'], WebSocketImpl: WS });
+  pool.connect();                          // socket stays CONNECTING -> publishes queue
+  for (let i = 0; i < 550; i++) pool.publish({ id: 'e' + i });
+  assert.strictEqual(pool.pending.length, 500, 'pending capped at 500');
+  assert.strictEqual(pool.pending[0].event.id, 'e50', 'oldest entries dropped, newest kept');
+  pool.pending.unshift({ event: { id: 'stale' }, ts: Date.now() - 200000 });
+  pool._drainPending();                    // no open relay: re-queues fresh, drops TTL-expired
+  assert.ok(!pool.pending.some(p => p.event.id === 'stale'), 'TTL-expired pending dropped on drain');
+  pool.disconnect();
+  console.log('  relay pending cap/TTL: pass');
+}
+
 async function main() {
   console.log('magicwand test.js');
   await testAuth();
@@ -572,6 +613,8 @@ async function main() {
   await testPagesFull();
   await testComposeFull();
   await testRelayDisconnectConnecting();
+  await testRelayReconnectCancel();
+  await testRelayPendingCapTtl();
   await testRelay();
   console.log('all pass');
 }
