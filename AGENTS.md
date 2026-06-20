@@ -29,9 +29,23 @@ attach a noop `ws.on('error', () => {})` to absorb the trailing error. See
 `src/relay-pool.js` disconnect() (commit 18d45b2). Only reproduces with a
 multi-relay pool where some sockets are still connecting at disconnect time.
 
+## RelayPool reconnect lifecycle must not resurrect after disconnect
+
+`RelayPool` tracks a `_closed` flag and a `_reconnectTimers` Map. `disconnect()`
+sets `_closed = true` and clears every tracked reconnect timer; `_open()` and the
+`onclose` handler early-return when `_closed`. This is load-bearing: `onclose`
+schedules `setTimeout(_open, ...)`, so without the flag a teardown leaves an
+in-flight timer that resurrects the relay. `connect()` resets `_closed = false`
+(`heal()` only re-opens dead sockets and is a no-op while `_closed`). Reconnect
+backoff is jittered +-25% via `jitter(ms)` to avoid lockstep thundering-herd
+reconnects. The offline publish queue (`this.pending`) stores `{event, ts}`,
+caps at `PENDING_MAX` (500, drop-oldest), and drops entries older than
+`PENDING_TTL_MS` (120s) on drain — never let it grow unbounded or replay stale
+events. Covered by `testRelayReconnectCancel` + `testRelayPendingCapTtl` (fake-WS).
+
 ## test.js size cap
 
-The single integration witness (`test.js`) grows as coverage expands. The previous <=200 line cap is superseded: the file may grow freely as long as it remains a single file at repo root, mock-free for network tests, and real-services only for the relay round-trip. Current size: ~441 lines (19 tests). Do not split into a `test/` directory.
+The single integration witness (`test.js`) grows as coverage expands. The previous <=200 line cap is superseded: the file may grow freely as long as it remains a single file at repo root, mock-free for network tests, and real-services only for the relay round-trip. Current size: ~620 lines (26 tests). Do not split into a `test/` directory.
 
 ## Learning audit
 
