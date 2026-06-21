@@ -43,6 +43,33 @@ caps at `PENDING_MAX` (500, drop-oldest), and drops entries older than
 `PENDING_TTL_MS` (120s) on drain — never let it grow unbounded or replay stale
 events. Covered by `testRelayReconnectCancel` + `testRelayPendingCapTtl` (fake-WS).
 
+## RelayPool publish-ack and pending dedupe
+
+`publish(event)` is still fire-and-forget (returns a `sent` boolean). For
+delivery confidence use `publishAndWait(event, { timeoutMs = 8000 })`: it sends
+then resolves `true` on the first relay `OK <id> true`, `false` on a relay
+reject (`OK <id> false`), and `false` on timeout. It keys pending ack records
+by `event.id` in `this._acks` (a `{resolve, timer}` Map); `_settleAck` resolves
+and `disconnect()` flushes every outstanding ack to `false` so no promise hangs.
+The `_handle` OK branch now emits both an `ok` and a `reject` event (previously
+only `reject`) and settles the ack. An event with no `id` cannot be acked, so
+`publishAndWait` falls back to resolving the `sent` boolean.
+
+The offline queue is deduped by `event.id` via `this._pendingIds` (a Set kept in
+lockstep with `this.pending`): `_queuePending` skips an id already queued, the
+cap-drop path removes the dropped id from the Set, and `_drainPending` clears the
+Set before re-publishing. This prevents a reconnect drain from double-publishing
+the same event. Covered by `testRelayPendingDedupe` + `testRelayPublishAck`
+(fake-WS, offline).
+
+## CI
+
+`.github/workflows/ci.yml` runs `node --check src/*.js` then installs `ws` +
+`nostr-tools` (`--no-save`) and runs `node test.js` on every push/PR. The
+real-relay phases tolerate single-relay flake via the multi-relay `RELAYS`
+array; `compose`/`data` tests skip when `xstate` is absent (not installed in
+CI) — that is expected, not a failure.
+
 ## test.js size cap
 
 The single integration witness (`test.js`) grows as coverage expands. The previous <=200 line cap is superseded: the file may grow freely as long as it remains a single file at repo root, mock-free for network tests, and real-services only for the relay round-trip. Current size: ~620 lines (26 tests). Do not split into a `test/` directory.
