@@ -588,6 +588,39 @@ async function testRelayPendingCapTtl() {
   console.log('  relay pending cap/TTL: pass');
 }
 
+async function testRelayPendingDedupe() {
+  const WS = fakeWSImpl();
+  const pool = new RelayPool({ relays: ['wss://a'], WebSocketImpl: WS });
+  pool.connect();                          // CONNECTING -> publishes queue
+  pool.publish({ id: 'dup' });
+  pool.publish({ id: 'dup' });             // same id must not double-queue
+  pool.publish({ id: 'other' });
+  assert.strictEqual(pool.pending.length, 2, 'pending deduped by event.id');
+  assert.strictEqual(pool._pendingIds.size, 2, 'pendingIds tracks unique ids');
+  pool.disconnect();
+  console.log('  relay pending dedupe: pass');
+}
+
+async function testRelayPublishAck() {
+  const WS = fakeWSImpl();
+  const pool = new RelayPool({ relays: ['wss://a'], WebSocketImpl: WS });
+  pool.connect();
+  WS.created[0].open();                     // readyState 1 -> publish sends
+  const okP = pool.publishAndWait({ id: 'acc' }, { timeoutMs: 1000 });
+  WS.created[0].onmessage({ data: JSON.stringify(['OK', 'acc', true, '']) });
+  assert.strictEqual(await okP, true, 'publishAndWait resolves true on accepted OK');
+
+  const rejP = pool.publishAndWait({ id: 'rej' }, { timeoutMs: 1000 });
+  WS.created[0].onmessage({ data: JSON.stringify(['OK', 'rej', false, 'blocked']) });
+  assert.strictEqual(await rejP, false, 'publishAndWait resolves false on relay reject');
+
+  const toP = pool.publishAndWait({ id: 'tmo' }, { timeoutMs: 30 });
+  assert.strictEqual(await toP, false, 'publishAndWait resolves false on timeout');
+  assert.strictEqual(pool._acks.size, 0, 'ack records cleaned up after settle');
+  pool.disconnect();
+  console.log('  relay publish ack: pass');
+}
+
 async function main() {
   console.log('magicwand test.js');
   await testAuth();
@@ -615,6 +648,8 @@ async function main() {
   await testRelayDisconnectConnecting();
   await testRelayReconnectCancel();
   await testRelayPendingCapTtl();
+  await testRelayPendingDedupe();
+  await testRelayPublishAck();
   await testRelay();
   console.log('all pass');
 }
