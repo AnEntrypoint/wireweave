@@ -92,7 +92,7 @@ export class RelayPool extends EventTarget {
         relay.subIds.add(subId);
         if (!relay._reqSentAt) relay._reqSentAt = Date.now();
       }
-      this._drainPending();
+      this._drainPending(url, ws);
     };
     ws.onmessage = (e) => {
       if (relay._reqSentAt && relay.latencyMs === null) {
@@ -171,24 +171,32 @@ export class RelayPool extends EventTarget {
 
   publish(event) {
     let sent = false;
-    for (const [, relay] of this.relays) {
+    let anyDisconnected = false;
+    const sentTo = new Set();
+    for (const [url, relay] of this.relays) {
       if (relay.ws?.readyState === 1) {
         relay.ws.send(JSON.stringify(['EVENT', event]));
         sent = true;
+        sentTo.add(url);
+      } else {
+        anyDisconnected = true;
       }
     }
-    if (sent) {
-      if (event?.id) this._pendingIds.delete(event.id);
-    } else {
-      this._queuePending(event);
-    }
+    if (anyDisconnected || !sent) this._queuePending(event, sentTo);
+    else if (event?.id) this._pendingIds.delete(event.id);
     return sent;
   }
 
-  _queuePending(event) {
-    if (event?.id && this._pendingIds.has(event.id)) return;
+  // Tracks delivery per relay URL, not just "sent to at least one" — a relay
+  // mid-reconnect during a partial outage otherwise never gets the event.
+  _queuePending(event, sentTo) {
+    if (event?.id && this._pendingIds.has(event.id)) {
+      const existing = this.pending.find((p) => p.event?.id === event.id);
+      if (existing) { for (const url of sentTo) existing.sentTo.add(url); }
+      return;
+    }
     if (event?.id) this._pendingIds.add(event.id);
-    this.pending.push({ event, ts: Date.now() });
+    this.pending.push({ event, sentTo, ts: Date.now() });
     while (this.pending.length > PENDING_MAX) {
       const dropped = this.pending.shift();
       if (dropped.event?.id) this._pendingIds.delete(dropped.event.id);
@@ -218,11 +226,26 @@ export class RelayPool extends EventTarget {
     if (rec) rec.resolve(accepted);
   }
 
-  _drainPending() {
+  _drainPending(url, ws) {
     const cutoff = Date.now() - PENDING_TTL_MS;
-    const pending = this.pending.splice(0);
-    this._pendingIds.clear();
-    for (const p of pending) { if (p.ts >= cutoff) this.publish(p.event); }
+    this.pending = this.pending.filter((entry) => {
+      const alive = entry.ts >= cutoff;
+      if (!alive && entry.event?.id) this._pendingIds.delete(entry.event.id);
+      return alive;
+    });
+    for (const entry of this.pending) {
+      if (entry.sentTo.has(url)) continue;
+      ws.send(JSON.stringify(['EVENT', entry.event]));
+      entry.sentTo.add(url);
+    }
+    this.pending = this.pending.filter((entry) => {
+      let allKnownSent = true;
+      for (const [u, r] of this.relays) {
+        if (r.ws?.readyState === 1 && !entry.sentTo.has(u)) { allKnownSent = false; break; }
+      }
+      if (allKnownSent && entry.event?.id) this._pendingIds.delete(entry.event.id);
+      return !allKnownSent;
+    });
   }
 
   isConnected() {
