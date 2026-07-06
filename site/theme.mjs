@@ -1,7 +1,15 @@
 // AnEntrypoint design-system theme for flatspace.
 // Renders site chrome via anentrypoint-design SDK using REAL SDK components.
 // theme.mjs emits HTML shell + bootstrap that consumes YAML baked into <script id="__site__">.
-// SDK provides ALL styling via installStyles(); plus a tiny inline body-margin reset.
+// SDK provides ALL styling via installStyles(); site/app-shell.css supplies wireweave's own
+// scoped ww-* classes (inlined into the head <style> below) -- no inline style="..." attributes.
+
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const appShellCss = readFileSync(join(__dirname, 'app-shell.css'), 'utf8');
 
 const escapeHtml = (s) => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -24,15 +32,15 @@ const { site, nav, home } = data;
 function Hero() {
   if (!home || !home.hero) return null;
   return C.Panel({
-    style: 'margin:8px',
-    children: h('div', { style: 'padding:24px 22px' },
-      C.Heading({ level: 1, style: 'margin:0 0 8px 0', children: home.hero.heading || site.title }),
+    class: 'ww-panel',
+    children: h('div', { class: 'ww-hero-body' },
+      C.Heading({ level: 1, class: 'ww-hero-heading', children: home.hero.heading || site.title }),
       home.hero.subheading ? C.Lede({ children: home.hero.subheading }) : null,
-      home.hero.body ? h('p', { style: 'margin:8px 0 16px 0;color:var(--panel-text-2);max-width:64ch' }, home.hero.body) : null,
-      (home.hero.badges && home.hero.badges.length) ? h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px 0' },
+      home.hero.body ? h('p', { class: 'ww-body-copy' }, home.hero.body) : null,
+      (home.hero.badges && home.hero.badges.length) ? h('div', { class: 'ww-hero-badges' },
         ...home.hero.badges.map((b, i) => C.Chip({ key: 'b' + i, children: b.label }))
       ) : null,
-      (home.hero.ctas && home.hero.ctas.length) ? h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' },
+      (home.hero.ctas && home.hero.ctas.length) ? h('div', { class: 'ww-hero-ctas' },
         ...home.hero.ctas.map((c, i) => C.Btn({ key: 'c' + i, href: c.href, primary: c.primary, children: c.label }))
       ) : null
     )
@@ -51,7 +59,7 @@ function Features() {
   }));
   return C.Panel({
     title: home.features.heading || 'features',
-    style: 'margin:8px',
+    class: 'ww-panel',
     children: rows
   });
 }
@@ -67,8 +75,8 @@ function Quickstart() {
   });
   return C.Panel({
     title: home.quickstart.heading || 'quick start',
-    style: 'margin:8px',
-    children: h('div', { style: 'padding:16px 22px' }, ...lineNodes)
+    class: 'ww-panel',
+    children: h('div', { class: 'ww-codeblock' }, ...lineNodes)
   });
 }
 
@@ -81,7 +89,7 @@ function CodeBlock({ lines }) {
       h('span', { class: 'cmd' }, l.text)
     );
   });
-  return h('div', { style: 'padding:16px 22px' }, ...nodes);
+  return h('div', { class: 'ww-codeblock' }, ...nodes);
 }
 
 function Modules() {
@@ -96,7 +104,7 @@ function Modules() {
   }));
   return C.Panel({
     title: home.modules.heading || 'modules',
-    style: 'margin:8px',
+    class: 'ww-panel',
     children: rows
   });
 }
@@ -105,9 +113,9 @@ function Install() {
   if (!home || !home.install) return null;
   return C.Panel({
     title: home.install.heading || 'install',
-    style: 'margin:8px',
+    class: 'ww-panel',
     children: [
-      home.install.body ? h('p', { style: 'margin:0 0 12px 0;color:var(--panel-text-2);max-width:60ch' }, home.install.body) : null,
+      home.install.body ? h('p', { class: 'ww-lede-copy' }, home.install.body) : null,
       home.install.code ? CodeBlock({ lines: home.install.code }) : null
     ].filter(Boolean)
   });
@@ -117,9 +125,9 @@ function Api() {
   if (!home || !home.api) return null;
   return C.Panel({
     title: home.api.heading || 'api',
-    style: 'margin:8px',
+    class: 'ww-panel',
     children: [
-      home.api.body ? h('p', { style: 'margin:0 0 12px 0;color:var(--panel-text-2);max-width:60ch' }, home.api.body) : null,
+      home.api.body ? h('p', { class: 'ww-lede-copy' }, home.api.body) : null,
       home.api.code ? CodeBlock({ lines: home.api.code }) : null
     ].filter(Boolean)
   });
@@ -136,7 +144,7 @@ function Examples() {
   }));
   return C.Panel({
     title: home.examples.heading || 'examples',
-    style: 'margin:8px',
+    class: 'ww-panel',
     children: rows
   });
 }
@@ -148,7 +156,7 @@ function Footer() {
     h('span', { class: 'item' }, '·'),
     h('a', { class: 'item', href: 'https://247420.xyz' }, '247420.xyz'),
     h('span', { class: 'spread' }),
-    site.repo ? h('a', { class: 'item', href: site.repo }, 'source ↗') : null
+    site.repo ? h('a', { class: 'item', href: site.repo }, 'source ->') : null
   );
 }
 
@@ -190,9 +198,9 @@ const html = ({ site, nav, home }) => `<!DOCTYPE html>
   <meta property="og:description" content="${escapeHtml(site.description || site.tagline || '')}" />
   <meta property="og:url" content="${escapeHtml(site.url || '')}" />
   <link rel="canonical" href="${escapeHtml(site.url || '')}" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E${encodeURIComponent(site.glyph || '◆')}%3C/text%3E%3C/svg%3E" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E${encodeURIComponent(site.glyph || 'W')}%3C/text%3E%3C/svg%3E" />
   <script type="importmap">{"imports":{"anentrypoint-design":"${SDK_URL}"}}</script>
-  <style>html,body{margin:0;padding:0}body{background:var(--app-bg,#FBF6EB);color:var(--ink,#1F1B16);font-family:var(--ff-ui,'Nunito',system-ui,sans-serif)}</style>
+  <style>html,body{margin:0;padding:0}body{background:var(--app-bg,#FBF6EB);color:var(--ink,#1F1B16);font-family:var(--ff-ui,'Nunito',system-ui,sans-serif)}${appShellCss}</style>
 </head>
 <body>
   <div id="app"></div>
