@@ -692,15 +692,15 @@ html, body {
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ============================================================
-   wireweave site theme -- Hero/Features/Quickstart/Install/Api/Examples
+   wireweave site theme -- Features/Quickstart/Install/Api/Examples/Hero-badges
    Scoped under .ds-247420 (the SDK render root). Replaces inline
    style="..." attributes previously set inline in site/theme.mjs.
+   .panel.ww-panel (two classes) outranks the SDK's own .ds-247420 .panel
+   base-margin rule on specificity, since installStyles() injects its
+   stylesheet into <head> AFTER this inlined block -- source order alone
+   would let the later same-specificity SDK rule win the cascade.
    ============================================================ */
-.ds-247420 .ww-panel { margin: 8px; }
-.ds-247420 .ww-hero-body { padding: 24px 22px; }
-.ds-247420 .ww-hero-heading { margin: 0 0 8px 0; }
-.ds-247420 .ww-body-copy { margin: 8px 0 16px 0; color: var(--panel-text-2); max-width: 64ch; }
+.ds-247420 .panel.ww-panel { margin: 8px; }
 .ds-247420 .ww-hero-badges { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px 0; }
-.ds-247420 .ww-hero-ctas { display: flex; gap: 8px; flex-wrap: wrap; }
 .ds-247420 .ww-codeblock { padding: 16px 22px; }
 .ds-247420 .ww-lede-copy { margin: 0 0 12px 0; color: var(--panel-text-2); max-width: 60ch; }
