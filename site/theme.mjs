@@ -29,22 +29,28 @@ document.documentElement.classList.add('ds-247420');
 const data = JSON.parse(document.getElementById('__site__').textContent);
 const { site, nav, home } = data;
 
+// Editorial Hero — asymmetric grid-template-areas layout (.ds-hero), the
+// house pattern this SDK mandates (AGENTS.md "asymmetric grid tension...
+// never a centered stack"). Replaces the ad-hoc C.Panel+padded-div stack
+// this used to render (title/subhead/body/badges/ctas all centered in one
+// column, a generic-template tell).
 function Hero() {
   if (!home || !home.hero) return null;
-  return C.Panel({
-    class: 'ww-panel',
-    children: h('div', { class: 'ww-hero-body' },
-      C.Heading({ level: 1, class: 'ww-hero-heading', children: home.hero.heading || site.title }),
-      home.hero.subheading ? C.Lede({ children: home.hero.subheading }) : null,
-      home.hero.body ? h('p', { class: 'ww-body-copy' }, home.hero.body) : null,
-      (home.hero.badges && home.hero.badges.length) ? h('div', { class: 'ww-hero-badges' },
-        ...home.hero.badges.map((b, i) => C.Chip({ key: 'b' + i, children: b.label }))
-      ) : null,
-      (home.hero.ctas && home.hero.ctas.length) ? h('div', { class: 'ww-hero-ctas' },
-        ...home.hero.ctas.map((c, i) => C.Btn({ key: 'c' + i, href: c.href, primary: c.primary, children: c.label }))
-      ) : null
-    )
-  });
+  const hero = home.hero;
+  const actions = (hero.ctas && hero.ctas.length)
+    ? hero.ctas.map((c, i) => C.Btn({ key: 'c' + i, href: c.href, primary: c.primary, children: c.label }))
+    : null;
+  return h('div', { class: 'ds-grain ds-home-hero-wrap' },
+    C.Hero({
+      eyebrow: hero.subheading || null,
+      title: hero.heading || site.title,
+      body: hero.body || '',
+      actions
+    }),
+    (hero.badges && hero.badges.length) ? h('div', { class: 'ww-hero-badges' },
+      ...hero.badges.map((b, i) => C.Chip({ key: 'b' + i, children: b.label }))
+    ) : null
+  );
 }
 
 function Features() {
