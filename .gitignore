@@ -32,7 +32,9 @@ package-lock.json
 *.stackdump
 rs-learn.db
 dist/
-.gm/
+.gm/*
+!.gm/memories/
+.gm/memories/.flat-export-done
 .codeinsight/
 .gm/browser-profile/
 .gm/browser-profile-*/
