@@ -1,11 +1,23 @@
-const ICE_SERVERS = [
+// STUN handles same-LAN / non-symmetric-NAT cases; TURN is required when both
+// peers sit behind symmetric or restricted-cone NAT (typical home routers,
+// most carrier-grade NAT, corporate networks). UDP, TCP, and TLS TURN variants
+// are included so at least one path survives strict egress filtering. Kept in
+// sync with voice.js's DEFAULT_ICE_SERVERS.
+const DEFAULT_ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun.cloudflare.com:3478' },
-  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'stun:global.stun.twilio.com:3478' },
+  { urls: 'turn:global.relay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:global.relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  // Legacy hostname kept as a low-priority fallback in case some deployments still resolve it.
   { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
 ];
+let ICE_SERVERS = DEFAULT_ICE_SERVERS;
+export const setIceServers = (list) => { if (Array.isArray(list) && list.length) ICE_SERVERS = list; };
+export const getIceServers = () => ICE_SERVERS.slice();
 
 const PRESENCE_EXPIRY = 300000;
 const HEARTBEAT = 30000;
@@ -17,14 +29,24 @@ const deriveRoomId = async (namespace, room) => {
   return 'wwdata' + Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
 };
 
+// Default: a plain browser-shaped RTCPeerConnection. Node hosts that want
+// deeper NAT-traversal tuning (ICE/UDP port muxing, a fixed port range for
+// port-forwarded firewalls, a SOCKS5/HTTP proxy for locked-down networks)
+// can pass createPeerConnection to construct their own native peer (e.g.
+// node-datachannel's PeerConnection with its richer RtcConfig) and hand it
+// back wrapped as an RTCPeerConnection-shaped object — wireweave itself never
+// depends on any Node-specific WebRTC binding.
+const defaultCreatePeerConnection = (config) => new RTCPeerConnection(config);
+
 export class DataSession extends EventTarget {
-  constructor({ fsm, xstate, relayPool, auth, namespace = '', dataChannelOptions = { ordered: true }, iceServers = null }) {
+  constructor({ fsm, xstate, relayPool, auth, namespace = '', dataChannelOptions = { ordered: true }, iceServers = null, createPeerConnection = defaultCreatePeerConnection }) {
     super();
     if (!fsm || !xstate || !relayPool || !auth) throw new Error('DataSession: missing deps');
     this.fsm = fsm; this.xstate = xstate; this.pool = relayPool; this.auth = auth;
     this.namespace = namespace;
     this.dcOptions = dataChannelOptions;
     this.iceServers = iceServers || ICE_SERVERS;
+    this.createPeerConnection = createPeerConnection;
     this.actor = null;
     this.room = ''; this.roomId = '';
     this.peers = new Map(); this.participants = new Map();
@@ -152,7 +174,7 @@ export class DataSession extends EventTarget {
     fsmActor.start();
     const peer = { pc: null, dc: null, pendingCandidates: [], bufferedCandidates: [], iceTimer: null, disconnectTimer: null, failCount: 0, state: 'new', fsm: fsmActor, remoteDescSet: false };
     this.peers.set(peerPubkey, peer);
-    const pc = new RTCPeerConnection({ iceServers: this.iceServers, bundlePolicy: 'max-bundle' });
+    const pc = this.createPeerConnection({ iceServers: this.iceServers, bundlePolicy: 'max-bundle', iceCandidatePoolSize: 4, iceTransportPolicy: 'all' });
     peer.pc = pc;
     const isOfferer = this.auth.pubkey > peerPubkey;
     this._wirePeer(peer, peerPubkey, fsmActor, isOfferer);

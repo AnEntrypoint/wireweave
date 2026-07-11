@@ -83,7 +83,38 @@ session.broadcast(new Uint8Array(payload));     // → all open peers
 session.send(somePeerPubkey, new Uint8Array(p)); // → one peer
 ```
 
-Options: `dataChannelOptions` (default `{ ordered: true }`) and `iceServers` (override the default STUN/TURN list). Construct multiple `DataSession`s in the same page to use distinct rooms / channel configurations.
+Options: `dataChannelOptions` (default `{ ordered: true }`), `iceServers` (override the default STUN/TURN list for this session only), and `createPeerConnection` (see below). Construct multiple `DataSession`s in the same page to use distinct rooms / channel configurations.
+
+`setIceServers(list)` / `getIceServers()` (also exported from `wireweave/data` and `wireweave/voice`) override the module-wide default ICE server list for every session created afterward — useful for pointing at your own TURN infrastructure once, instead of passing `iceServers` to each session.
+
+## Node hosts behind NAT: `createPeerConnection`
+
+Both `DataSession` and `VoiceSession` accept a `createPeerConnection(config)` option. It defaults to a plain `new RTCPeerConnection(config)` (browser-shaped, works as-is with any WebRTC-polyfilled `globalThis`) — wireweave itself never imports a Node-specific WebRTC binding. A Node host that is itself likely to sit behind a restrictive NAT (a CLI tool, a headless server) can instead construct its own natively-tuned peer and hand it back:
+
+```js
+import * as ndc from 'node-datachannel';
+import { RTCPeerConnection as PolyfillRTCPeerConnection } from 'node-datachannel/polyfill';
+
+const session = createDataSession({
+  fsm, xstate, relayPool: pool, auth, namespace: 'mygame',
+  createPeerConnection: (config) => {
+    // node-datachannel's native RtcConfig is richer than the W3C shape:
+    // enableIceUdpMux shares one UDP port across all peer connections
+    // (fewer ports to traverse through a firewall); portRangeBegin/End
+    // pins ICE to a fixed range you can port-forward; proxyServer routes
+    // ICE through a SOCKS5/HTTP proxy on networks that block direct UDP/TCP.
+    const nativePc = new ndc.PeerConnection('peer', {
+      iceServers: config.iceServers.map(s => s.urls),
+      enableIceUdpMux: true,
+      // portRangeBegin: 50000, portRangeEnd: 51000,
+      // proxyServer: { type: 'Socks5', ip: '127.0.0.1', port: 1080 }
+    });
+    return new PolyfillRTCPeerConnection({ peerConnection: nativePc });
+  }
+});
+```
+
+This is opt-in and additive — omit `createPeerConnection` and Node hosts behave exactly as before (a plain polyfilled `RTCPeerConnection`).
 
 ## game / 3-mode usage pattern
 

@@ -2,6 +2,7 @@ import assert from 'node:assert';
 import WebSocket from 'ws';
 import * as NostrTools from 'nostr-tools';
 import { RelayPool, NostrAuth, createDataSession, createFSM, DM } from './src/index.js';
+import { getIceServers, setIceServers } from './src/data.js';
 import { dtag, parseDtag } from './src/dtag.js';
 import { createMessageBus } from './src/message.js';
 import { createRoles } from './src/roles.js';
@@ -109,6 +110,62 @@ async function testDataSession() {
   assert.ok(Array.isArray(dbg.peers));
   assert.strictEqual(dbg.peers.length, 0);
   console.log('  data: shape pass');
+}
+
+// createPeerConnection lets a Node host inject a natively-tuned peer (e.g.
+// node-datachannel with ICE/UDP muxing, a fixed port range, or a proxy)
+// without wireweave depending on any Node WebRTC binding. Verifies: (1) the
+// default path still constructs a real, working session with no factory
+// supplied; (2) a custom factory is actually invoked, receives the hardened
+// ICE config (iceCandidatePoolSize, iceTransportPolicy, the full ICE server
+// list), and its returned object is what the session operates on.
+async function testDataSessionCreatePeerConnection() {
+  const xstate = await import('xstate').catch(() => null);
+  if (!xstate) { console.log('  data: createPeerConnection skip (xstate not installed)'); return; }
+  const fsm = createFSM(xstate);
+  const auth = new NostrAuth({ nostrTools: NostrTools });
+  auth.generateKey();
+  const pool = new RelayPool({ relays: [], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket });
+
+  let factoryCalls = 0;
+  let capturedConfig = null;
+  const mockPc = {
+    onicecandidate: null, onicegatheringstatechange: null, onconnectionstatechange: null, ondatachannel: null,
+    createDataChannel: () => ({ binaryType: '', onopen: null, onclose: null, onmessage: null, onerror: null }),
+    createOffer: async () => ({}),
+    setLocalDescription: async () => {},
+    close: () => {}
+  };
+  const createPeerConnection = (config) => { factoryCalls++; capturedConfig = config; return mockPc; };
+
+  const session = createDataSession({ fsm, xstate, relayPool: pool, auth, namespace: 'wwtest', createPeerConnection });
+  session._maybeConnect('b'.repeat(64));
+
+  assert.strictEqual(factoryCalls, 1);
+  assert.strictEqual(capturedConfig.iceCandidatePoolSize, 4);
+  assert.strictEqual(capturedConfig.iceTransportPolicy, 'all');
+  assert.ok(Array.isArray(capturedConfig.iceServers) && capturedConfig.iceServers.length > 0);
+  assert.strictEqual(session.peers.get('b'.repeat(64)).pc, mockPc);
+  console.log('  data: createPeerConnection factory pass');
+}
+
+function testIceServerOverrides() {
+  const originalIceServers = getIceServers();
+  assert.ok(originalIceServers.length > 0);
+  assert.ok(originalIceServers.some((s) => /stun/.test(s.urls)));
+
+  const custom = [{ urls: 'stun:example.test:3478' }];
+  setIceServers(custom);
+  assert.deepStrictEqual(getIceServers(), custom);
+
+  // getIceServers returns a copy, not the live array — mutating it must not
+  // affect subsequent reads.
+  const copy = getIceServers();
+  copy.push({ urls: 'stun:should-not-persist:3478' });
+  assert.deepStrictEqual(getIceServers(), custom);
+
+  setIceServers(originalIceServers); // restore for any later test in this run
+  console.log('  data: setIceServers/getIceServers override pass');
 }
 
 async function testDM() {
@@ -635,6 +692,8 @@ async function main() {
   await testPagesSanitizer();
   await testCompose();
   await testDataSession();
+  await testDataSessionCreatePeerConnection();
+  testIceServerOverrides();
   await testDM();
   await testChat();
   await testChannelsMutations();

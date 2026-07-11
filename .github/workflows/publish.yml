@@ -2,7 +2,7 @@ name: publish
 
 on:
   push:
-    branches: [master]
+    branches: [main]
 
 jobs:
   publish:
@@ -41,7 +41,7 @@ jobs:
           git add package.json
           git commit -m "chore: release v$VERSION [skip-publish]"
           git tag "v$VERSION"
-          git push origin master --follow-tags
+          git push origin main --follow-tags
 
       - name: publish
         run: npm publish --access public

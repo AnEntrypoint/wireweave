@@ -41,13 +41,19 @@ const deriveRoomId = async (serverId, channel) => {
   return 'zellous' + Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
 };
 
+// See data.js's defaultCreatePeerConnection for why this hook exists: it lets
+// a Node host inject a natively-tuned peer (ICE/UDP muxing, fixed port range,
+// proxy passthrough) without wireweave depending on any Node WebRTC binding.
+const defaultCreatePeerConnection = (config) => new RTCPeerConnection(config);
+
 export class VoiceSession extends EventTarget {
-  constructor({ fsm, xstate, relayPool, auth, mediaDevices, bans = null, serverId = '', onAudioTrack = null, onVideoTrack = null }) {
+  constructor({ fsm, xstate, relayPool, auth, mediaDevices, bans = null, serverId = '', onAudioTrack = null, onVideoTrack = null, createPeerConnection = defaultCreatePeerConnection }) {
     super();
     if (!fsm || !xstate || !relayPool || !auth || !mediaDevices) throw new Error('VoiceSession: missing deps');
     this.fsm = fsm; this.xstate = xstate; this.pool = relayPool; this.auth = auth; this.md = mediaDevices; this.bans = bans;
     this.serverId = serverId;
     this.onAudioTrack = onAudioTrack; this.onVideoTrack = onVideoTrack;
+    this.createPeerConnection = createPeerConnection;
     this.actor = null;
     this.channelName = ''; this.roomId = '';
     this.peers = new Map(); this.participants = new Map();
@@ -520,7 +526,7 @@ export class VoiceSession extends EventTarget {
     fsmActor.start();
     const peer = { pc: null, audioEl: null, pendingCandidates: [], bufferedCandidates: [], iceTimer: null, disconnectTimer: null, failCount: 0, state: 'new', fsm: fsmActor, _stallInterval: null, remoteDescSet: false, trackEndedRestart: false };
     this.peers.set(peerPubkey, peer);
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS, bundlePolicy: 'max-bundle', iceCandidatePoolSize: 4, iceTransportPolicy: 'all' });
+    const pc = this.createPeerConnection({ iceServers: ICE_SERVERS, bundlePolicy: 'max-bundle', iceCandidatePoolSize: 4, iceTransportPolicy: 'all' });
     peer.pc = pc;
     const isOfferer = this.auth.pubkey > peerPubkey;
     if (isOfferer) {
