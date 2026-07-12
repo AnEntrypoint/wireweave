@@ -1,14 +1,15 @@
+// Ordered fastest-first by measured connect latency; dead relays removed so
+// signaling reaches a live relay immediately instead of racing dead hosts.
+// (relay.nostr.band / nostr.wine / relay.current.fyi / relay.0xchat.com were
+// unreachable — DNS-dead or refusing connections — and only added connect
+// latency and console noise. Re-audit periodically.)
 const DEFAULT_RELAYS = [
-  'wss://relay.damus.io',
   'wss://relay.primal.net',
   'wss://nos.lol',
-  'wss://relay.snort.social',
-  'wss://relay.nostr.band',
-  'wss://nostr.wine',
-  'wss://relay.current.fyi',
   'wss://offchain.pub',
   'wss://nostr-pub.wellorder.net',
-  'wss://relay.0xchat.com'
+  'wss://relay.snort.social',
+  'wss://relay.damus.io'
 ];
 
 const SEEN_MAX = 10000;
