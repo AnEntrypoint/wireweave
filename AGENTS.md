@@ -74,10 +74,4 @@ CI) — that is expected, not a failure.
 
 The single integration witness (`test.js`) grows as coverage expands. The previous <=200 line cap is superseded: the file may grow freely as long as it remains a single file at repo root, mock-free for network tests, and real-services only for the relay round-trip. Current size: ~620 lines (26 tests). Do not split into a `test/` directory.
 
-## Learning audit
-
-- 2026-04-30: checked 2 items, removed 0, refined 2 (storage-required, multi-relay-tests — recall missed, ingested refined versions).
-- 2026-04-30: checked 3 items (storage-required, multi-relay-tests, ws-close-CONNECTING), removed 0, refined 3 — all three have no recall hits, kept in AGENTS.md, ingested refined versions to rs-learn.
-- 2026-06-19: added test.js size-cap section; cap lifted from <=200 to uncapped single-file.
-
 @.gm/next-step.md
