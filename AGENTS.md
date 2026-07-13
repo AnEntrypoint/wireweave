@@ -2,6 +2,17 @@
 
 Non-obvious caveats for agents working in this repo.
 
+## Main-only, no branches
+
+Always work directly on `main`. Never create or leave work on a feature
+branch. If a non-main work branch is ever found, merge its content into
+`main` then delete the branch (`gh-pages` is the sole exception -- it is a
+deploy artifact branch, not a work branch, and stays). If the default branch
+is ever named `master`, rename it to `main`. This repo is consumed as a git
+submodule by spoint (`client/vendor/wireweave`) and edited in place from
+there -- commit and push directly to `main` in both repos, same as any other
+change here.
+
 ## createWireweave requires explicit storage in non-browser envs
 
 `createWireweave({ storage })` MUST receive a storage instance in Node/test
