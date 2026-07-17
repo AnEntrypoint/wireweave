@@ -1,4 +1,4 @@
-export { RelayPool, createRelayPool } from './relay-pool.js';
+export { RelayPool, createRelayPool, RelayHealth } from './relay-pool.js';
 export { NostrAuth, createAuth } from './auth.js';
 export { createFSM } from './fsm.js';
 export { VoiceSession, createVoiceSession } from './voice.js';
