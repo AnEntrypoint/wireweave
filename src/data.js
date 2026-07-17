@@ -16,8 +16,36 @@ const DEFAULT_ICE_SERVERS = [
   { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
 ];
 let ICE_SERVERS = DEFAULT_ICE_SERVERS;
-export const setIceServers = (list) => { if (Array.isArray(list) && list.length) ICE_SERVERS = list; };
+let iceServersOverridden = false;
+export const setIceServers = (list) => { if (Array.isArray(list) && list.length) { ICE_SERVERS = list; iceServersOverridden = true; } };
 export const getIceServers = () => ICE_SERVERS.slice();
+
+// The bundled TURN entries use the openrelayproject public demo credentials
+// (metered.ca's shared, rate-limited, no-SLA relay). Fine for local dev/testing,
+// but a real hosted deployment that never calls setIceServers() is silently
+// depending on a third party's free-tier relay for every NAT-restricted peer —
+// warn once, at first connect, so that's discoverable instead of a mystery
+// "some players can never connect" bug report. Never fires on localhost/loopback
+// dev servers, and never fires once the host has provided its own iceServers.
+let defaultTurnWarned = false;
+const isHostedDeployment = () => {
+  try {
+    const host = typeof location !== 'undefined' && location.hostname;
+    if (!host) return false;
+    if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '') return false;
+    if (host.endsWith('.local')) return false;
+    return true;
+  } catch { return false; }
+};
+const warnDefaultTurnCredentialsOnce = () => {
+  if (defaultTurnWarned || iceServersOverridden) return;
+  if (!isHostedDeployment()) return;
+  defaultTurnWarned = true;
+  console.warn('[wireweave] Using the bundled default TURN servers (openrelayproject shared public credentials) ' +
+    'on a non-localhost deployment. These are a free, rate-limited, no-SLA relay meant for local dev/testing — ' +
+    'NAT-restricted peers on this deployment may fail to connect or get throttled. Call setIceServers() with your ' +
+    'own TURN credentials before connecting.');
+};
 
 const PRESENCE_EXPIRY = 300000;
 const HEARTBEAT = 30000;
@@ -64,6 +92,7 @@ export class DataSession extends EventTarget {
   }
 
   async connect(room, { displayName = 'Guest' } = {}) {
+    warnDefaultTurnCredentialsOnce();
     if (!this.actor) this._initActor();
     if (!this.actor.getSnapshot().can({ type: 'connect' })) await this.disconnect();
     this.actor.send({ type: 'connect' });
