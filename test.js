@@ -171,14 +171,39 @@ function testIceServerOverrides() {
 async function testDM() {
   const a = new NostrAuth({ nostrTools: NostrTools }); a.generateKey();
   const b = new NostrAuth({ nostrTools: NostrTools }); b.generateKey();
-  const pool = { publish: () => true, subscribe: () => 'x', unsubscribe: () => {} };
+  const published = [];
+  const pool = { publish: (e) => { published.push(e); return true; }, subscribe: () => 'x', unsubscribe: () => {} };
   const dmA = new DM({ relayPool: pool, auth: a, nostrTools: NostrTools });
   const dmB = new DM({ relayPool: pool, auth: b, nostrTools: NostrTools });
-  const signed = await dmA.send(b.pubkey, 'magicwand-dm');
-  assert.strictEqual(signed.kind, 14);
-  assert.strictEqual(dmB.decrypt(signed), 'magicwand-dm');
-  assert.strictEqual(dmA.decrypt(signed), 'magicwand-dm');
-  console.log('  dm: nip44 round-trip pass');
+  const wrap = await dmA.send(b.pubkey, 'magicwand-dm');
+  // wire event is a NIP-17 gift-wrap (kind 1059), not the bare kind:14 rumor
+  assert.strictEqual(wrap.kind, 1059);
+  assert.strictEqual(dmB.decrypt(wrap), 'magicwand-dm');
+  // sender self-copy is also published, separately wrapped for A's own key
+  assert.strictEqual(published.length, 2);
+  assert.strictEqual(published[1].kind, 1059);
+  assert.strictEqual(dmA.decrypt(published[1]), 'magicwand-dm');
+
+  // NIP-17 privacy property: the outer gift-wrap leaks neither sender nor
+  // recipient identity to a relay-level observer. The wrap's pubkey is a
+  // fresh single-use random key (not A's real pubkey), and the wrap event
+  // itself carries no plaintext content nor the real sender pubkey anywhere
+  // in its cleartext fields — only the addressed 'p' tag (the recipient) is
+  // visible, same as bare nip44 already left visible, but the SENDER is now
+  // hidden (nip44-only kind:14 signed the real event with A's real pubkey).
+  assert.notStrictEqual(wrap.pubkey, a.pubkey, 'gift-wrap outer pubkey is not the real sender');
+  assert.notStrictEqual(wrap.pubkey, b.pubkey, 'gift-wrap outer pubkey is not the recipient either');
+  assert.ok(!JSON.stringify(wrap).includes('magicwand-dm'), 'plaintext never appears in the wrap, even serialized');
+  const onlyPTag = wrap.tags.every(t => t[0] === 'p');
+  assert.ok(onlyPTag && wrap.tags.length === 1, 'wrap carries only the recipient p tag, nothing else');
+  assert.strictEqual(wrap.tags[0][1], b.pubkey);
+
+  // unwrap() exposes the real rumor-level sender identity (only to the holder
+  // of the recipient privkey) alongside the plaintext.
+  const rumor = dmB.unwrap(wrap);
+  assert.strictEqual(rumor.pubkey, a.pubkey, 'unwrapped rumor reveals the real sender to the addressed recipient');
+  assert.strictEqual(rumor.kind, 14);
+  console.log('  dm: nip17 gift-wrap round-trip + sender-privacy pass');
 }
 
 function testDtag() {
@@ -516,22 +541,23 @@ async function testDMSubscribe() {
   // subscribe B, feed signed event from A
   let received = null;
   const subId = dmB.subscribe((msg) => { received = msg; });
-  const signed = await dmA.send(b.pubkey, 'hello-sub');
-  pool.feed(subId, signed);
+  const wrap = await dmA.send(b.pubkey, 'hello-sub');
+  pool.feed(subId, wrap);
   assert.ok(received, 'onMessage fired');
   assert.strictEqual(received.plaintext, 'hello-sub');
   assert.strictEqual(received.peer, a.pubkey);
+  assert.strictEqual(received.rumor.kind, 14);
   // unsubscribe then feed: no callback
   dmB.unsubscribe();
   received = null;
-  pool.feed(subId, signed);
+  pool.feed(subId, wrap);
   assert.strictEqual(received, null, 'no callback after unsubscribe');
   // bad ciphertext emits error event, not throw
   const dmB2 = new DM({ relayPool: pool, auth: b, nostrTools: NostrTools });
   let errFired = false;
   dmB2.addEventListener('error', () => { errFired = true; });
   const subId2 = dmB2.subscribe(() => {});
-  pool.feed(subId2, { pubkey: a.pubkey, kind: 14, tags: [['p', b.pubkey]], content: 'not-valid-ciphertext', id: 'x', sig: 'y' });
+  pool.feed(subId2, { pubkey: NostrTools.getPublicKey(NostrTools.generateSecretKey()), kind: 1059, tags: [['p', b.pubkey]], content: 'not-valid-ciphertext', id: 'x', sig: 'y' });
   assert.ok(errFired, 'error event emitted on bad ciphertext');
   console.log('  dm subscribe: pass');
 }
