@@ -1,7 +1,9 @@
 import assert from 'node:assert';
+import net from 'node:net';
 import WebSocket, { WebSocketServer } from 'ws';
 import * as NostrTools from 'nostr-tools';
-import { RelayPool, NostrAuth, createDataSession, createFSM, DM, Profile, fragment, Reassembler, MTU_DEFAULT } from './src/index.js';
+import { RelayPool, RelayHealth, NostrAuth, createDataSession, createFSM, DM, Profile, fragment, Reassembler, MTU_DEFAULT } from './src/index.js';
+import * as debug from './src/debug.js';
 import { getIceServers, setIceServers } from './src/data.js';
 import { dtag, parseDtag } from './src/dtag.js';
 import { createMessageBus } from './src/message.js';
@@ -775,6 +777,289 @@ async function testRelayPublishBudget() {
   console.log('  relay publish budget: pass');
 }
 
+// Finds a real local TCP port nothing is listening on, by binding then
+// immediately releasing it — used to build a genuinely-unreachable
+// ws:// URL for the unhealthy-relay tests below (real ECONNREFUSED,
+// not a mock), without hardcoding a port number that could someday
+// collide with something else running on the test machine.
+function freeLocalPort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.on('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const port = srv.address().port;
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+// Real relay-health scoring (src/relay-pool.js's RelayHealth/computeRank)
+// against a genuine ephemeral relay — proves real connect latency, real
+// EOSE latency, and a real success/attempt uptime ratio are actually
+// measured and blended into a real 0-100 rank, not just asserted present.
+async function testRelayHealthScoring() {
+  const relay = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
+  try {
+    const pool = new RelayPool({ relays: [relay.url], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, publishBudget: false });
+    const auth = new NostrAuth({ nostrTools: NostrTools });
+    auth.generateKey();
+    pool.connect();
+    await Promise.race([
+      new Promise((res) => { const h = (e) => { if (e.detail.status === 'connected') { pool.removeEventListener('relay-status', h); res(); } }; pool.addEventListener('relay-status', h); }),
+      timed(TIMEOUT, 'health-test connect')
+    ]);
+    // Force a real EOSE round trip so eoseLatencyMs gets a real sample too.
+    const marker = 'health-test-' + Math.random().toString(36).slice(2);
+    await new Promise((res, rej) => {
+      const subId = 'health-' + Math.random().toString(36).slice(2, 10);
+      const timer = setTimeout(() => rej(new Error('no eose')), TIMEOUT);
+      pool.subscribe(subId, [{ '#t': [marker], kinds: [1] }], null, () => { clearTimeout(timer); pool.unsubscribe(subId); res(); });
+    });
+
+    const health = pool._getHealth(relay.url);
+    assert.strictEqual(health.attempts, 1, 'one real connect attempt recorded');
+    assert.ok(health.connectLatencyMs !== null && health.connectLatencyMs >= 0, 'real connect latency measured: ' + health.connectLatencyMs + 'ms');
+    assert.ok(health.eoseLatencyMs !== null && health.eoseLatencyMs >= 0, 'real EOSE latency measured: ' + health.eoseLatencyMs + 'ms');
+    assert.ok(health.rank > 50, 'a healthy relay with fast connect+EOSE and no failures ranks above the neutral default: ' + health.rank);
+
+    const report = pool.healthReport();
+    assert.strictEqual(report.length, 1);
+    assert.strictEqual(report[0].url, relay.url);
+    assert.strictEqual(report[0].rank, health.rank, 'healthReport() reflects the live-computed rank');
+
+    pool.disconnect();
+  } finally {
+    await relay.close();
+  }
+  console.log('  relay health scoring: pass (real connect+EOSE latency measured)');
+}
+
+// A deliberately-unhealthy relay (a real, currently-unbound local TCP port —
+// genuine ECONNREFUSED on every attempt, not a mock/stub) must score
+// durably lower than a real, healthy ephemeral relay, and healthReport()
+// must return them best-rank-first.
+async function testUnhealthyRelayLowerScore() {
+  const relay = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
+  const deadPort = await freeLocalPort();
+  const deadUrl = 'ws://127.0.0.1:' + deadPort;
+  try {
+    const pool = new RelayPool({ relays: [relay.url, deadUrl], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, publishBudget: false, autoRotate: false });
+    pool.connect();
+    // Wait for the healthy relay to connect AND for the dead relay to fail
+    // at least twice (real 'error'/'closed' events, real reconnect-backoff
+    // cycling) so its attempts/successes ratio has genuine adverse signal.
+    await Promise.race([
+      new Promise((res) => { const h = (e) => { if (e.detail.url === relay.url && e.detail.status === 'connected') { pool.removeEventListener('relay-status', h); res(); } }; pool.addEventListener('relay-status', h); }),
+      timed(TIMEOUT, 'healthy-side connect')
+    ]);
+    await new Promise((res) => {
+      let errorCount = 0;
+      const h = (e) => { if (e.detail.url === deadUrl && (e.detail.status === 'error' || e.detail.status === 'closed')) { errorCount++; if (errorCount >= 2) { pool.removeEventListener('relay-status', h); res(); } } };
+      pool.addEventListener('relay-status', h);
+    });
+
+    const healthyHealth = pool._getHealth(relay.url);
+    const deadHealth = pool._getHealth(deadUrl);
+    assert.ok(deadHealth.attempts >= 2, 'dead relay accumulated real repeated connect attempts: ' + deadHealth.attempts);
+    assert.strictEqual(deadHealth.successes, 0, 'dead relay has zero real sustained-connection successes');
+    assert.ok(deadHealth.rank < healthyHealth.rank, 'unreachable relay (' + deadHealth.rank + ') ranks strictly below the healthy relay (' + healthyHealth.rank + ')');
+    assert.ok(deadHealth.rank < 50, 'a relay with only real failed attempts and zero successes scores below the neutral default: ' + deadHealth.rank);
+
+    const report = pool.healthReport();
+    assert.strictEqual(report[0].url, relay.url, 'healthReport() sorts the healthy relay first');
+    assert.strictEqual(report[1].url, deadUrl, 'healthReport() sorts the unhealthy relay last');
+    assert.ok(report[0].rank >= report[1].rank, 'healthReport() is sorted best-rank-first');
+
+    pool.disconnect();
+  } finally {
+    await relay.close();
+  }
+  console.log('  unhealthy relay lower score: pass (real ECONNREFUSED-driven rank divergence)');
+}
+
+// Auto-rotation must actually swap a consistently-unhealthy active relay
+// for a proven-healthier fallback candidate, live, via real connection
+// outcomes — not a simulated health object.
+async function testAutoRotateAwayFromUnhealthy() {
+  const good = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
+  const spare = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
+  const deadPort = await freeLocalPort();
+  const deadUrl = 'ws://127.0.0.1:' + deadPort;
+  try {
+    // Pre-seed the fallback candidate (`spare`) with real observed history
+    // by connecting to it directly first — _maybeRotate() refuses to
+    // promote a candidate with zero attempts (an untested relay never
+    // displaces one with a track record), so the candidate needs genuine
+    // prior connects before it can win a rotation. Also drives a real EOSE
+    // round trip so both latency components score above neutral (50),
+    // giving `spare` enough of a real margin over the dead relay's rank
+    // (which sits at 35 after 2 failed attempts, see
+    // testUnhealthyRelayLowerScore) to clear _maybeRotate's ROTATE_GAP=20.
+    const seedPool = new RelayPool({ relays: [spare.url], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, publishBudget: false });
+    seedPool.connect();
+    await Promise.race([
+      new Promise((res) => { const h = (e) => { if (e.detail.status === 'connected') { seedPool.removeEventListener('relay-status', h); res(); } }; seedPool.addEventListener('relay-status', h); }),
+      timed(TIMEOUT, 'seed connect')
+    ]);
+    await new Promise((res, rej) => {
+      const subId = 'seed-' + Math.random().toString(36).slice(2, 10);
+      const timer = setTimeout(() => rej(new Error('no seed eose')), TIMEOUT);
+      seedPool.subscribe(subId, [{ kinds: [1], limit: 0 }], null, () => { clearTimeout(timer); seedPool.unsubscribe(subId); res(); });
+    });
+    const seededHealth = seedPool._getHealth(spare.url).toJSON();
+    seedPool.disconnect();
+
+    // Real pool: 3 active URLs (above MIN_ACTIVE_RELAYS=2 floor) — one
+    // genuinely healthy (`good`), one genuinely dead, one filler so
+    // rotation is legal. `spare` sits only in fallbackRelays, carrying the
+    // real pre-seeded health record forward via a shared storage object.
+    const store = memStore();
+    store.setItem('ww_relay_health', JSON.stringify([seededHealth]));
+    const pool = new RelayPool({
+      relays: [good.url, deadUrl, good.url + '#filler'],
+      verifyEvent: NostrTools.verifyEvent,
+      WebSocketImpl: class extends WebSocket { constructor(u) { super(u.replace(/#filler$/, '')); } },
+      storage: store,
+      fallbackRelays: [spare.url],
+      publishBudget: false
+    });
+    assert.strictEqual(pool._getHealth(spare.url).rank, seededHealth.rank, 'fallback candidate loaded its real pre-seeded rank from persisted storage');
+
+    let rotated = null;
+    pool.addEventListener('relay-rotated', (e) => { rotated = e.detail; });
+    pool.connect();
+
+    // Drive the pool until the real rotation actually fires (real failed
+    // connect/close cycles against the dead relay evaluate _maybeRotate on
+    // every close per the fix in relay-pool.js's ws.onclose handler).
+    await Promise.race([
+      new Promise((res) => { pool.addEventListener('relay-rotated', () => res(), { once: true }); }),
+      timed(TIMEOUT, 'rotation to occur')
+    ]);
+
+    assert.ok(rotated, 'a relay-rotated event actually fired');
+    assert.strictEqual(rotated.out, deadUrl, 'the consistently-unhealthy relay was the one rotated out');
+    assert.strictEqual(rotated.in, spare.url, 'the proven-healthier fallback candidate was rotated in');
+    assert.ok(!pool.urls.includes(deadUrl), 'dead relay URL no longer in the live pool after rotation');
+    assert.ok(pool.urls.includes(spare.url), 'healthier fallback relay URL now in the live pool after rotation');
+
+    pool.disconnect();
+  } finally {
+    await good.close();
+    await spare.close();
+  }
+  console.log('  auto-rotate away from unhealthy: pass (real relay-rotated event, real URL swap)');
+}
+
+// A neutral (never-connected) fallback candidate must NOT be promoted by
+// rotation even when the active pool has a genuinely unhealthy member —
+// _maybeRotate requires the candidate to have real observed history
+// (attempts > 0) before it can displace anything.
+async function testNoRotateToUntestedCandidate() {
+  const deadPort = await freeLocalPort();
+  const deadUrl = 'ws://127.0.0.1:' + deadPort;
+  const untestedUrl = 'ws://127.0.0.1:1'; // never dialed by this test
+  const good = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
+  try {
+    const pool = new RelayPool({
+      relays: [good.url, deadUrl, good.url],
+      verifyEvent: NostrTools.verifyEvent,
+      WebSocketImpl: WebSocket,
+      fallbackRelays: [untestedUrl],
+      publishBudget: false
+    });
+    let rotated = false;
+    pool.addEventListener('relay-rotated', () => { rotated = true; });
+    pool.connect();
+    // Give the dead relay two real failed cycles — enough for _maybeRotate
+    // to consider rotating, if a valid candidate existed.
+    await new Promise((res) => {
+      let deadCloses = 0;
+      const h = (e) => { if (e.detail.url === deadUrl && e.detail.status === 'closed') { deadCloses++; if (deadCloses >= 2) { pool.removeEventListener('relay-status', h); res(); } } };
+      pool.addEventListener('relay-status', h);
+    });
+    assert.strictEqual(pool._getHealth(untestedUrl).attempts, 0, 'candidate genuinely never dialed');
+    assert.strictEqual(rotated, false, 'no rotation happened toward a candidate with zero real connection history');
+    assert.ok(pool.urls.includes(deadUrl), 'unhealthy relay stays in the pool absent a proven-better alternative');
+    pool.disconnect();
+  } finally {
+    await good.close();
+  }
+  console.log('  no rotate to untested candidate: pass');
+}
+
+// Health scores must survive a real session reload: a fresh RelayPool
+// instance sharing the same storage object loads a prior instance's
+// persisted RelayHealth records instead of starting neutral.
+async function testHealthPersistsAcrossReload() {
+  const relay = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
+  try {
+    const store = memStore();
+    const pool1 = new RelayPool({ relays: [relay.url], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, storage: store, publishBudget: false });
+    pool1.connect();
+    await Promise.race([
+      new Promise((res) => { const h = (e) => { if (e.detail.status === 'connected') { pool1.removeEventListener('relay-status', h); res(); } }; pool1.addEventListener('relay-status', h); }),
+      timed(TIMEOUT, 'reload-test connect')
+    ]);
+    const before = pool1._getHealth(relay.url).toJSON();
+    assert.ok(before.connectLatencyMs !== null, 'real latency recorded before "reload"');
+    pool1.disconnect(); // flushes _saveHealthNow synchronously on disconnect()
+
+    const persisted = store.getItem('ww_relay_health');
+    assert.ok(persisted, 'health was actually written to the storage object');
+    const parsed = JSON.parse(persisted);
+    assert.ok(Array.isArray(parsed) && parsed.some((e) => e.url === relay.url), 'persisted blob contains the real relay URL');
+
+    // Simulates a fresh page/session load: a brand-new RelayPool instance,
+    // never having connected to anything, sharing only the storage object.
+    const pool2 = new RelayPool({ relays: [relay.url], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, storage: store, publishBudget: false });
+    const reloaded = pool2._getHealth(relay.url);
+    assert.strictEqual(reloaded.attempts, before.attempts, 'attempt count survived reload without a new connection');
+    assert.strictEqual(reloaded.connectLatencyMs, before.connectLatencyMs, 'connect latency survived reload byte-for-byte');
+    assert.strictEqual(reloaded.rank, before.rank, 'rank survived reload byte-for-byte');
+    assert.ok(reloaded instanceof RelayHealth, 'reloaded record is a real RelayHealth instance (RelayHealth.fromJSON), not a plain object');
+    pool2.disconnect();
+  } finally {
+    await relay.close();
+  }
+  console.log('  relay health persists across reload: pass (real storage round-trip)');
+}
+
+// debug.js registry: a live consumer (e.g. a debug panel) reads
+// window.__wireweave.<key> / debug.get(<key>) and calls healthReport() —
+// this proves a RelayPool instance actually self-registers and
+// deregisters through the real debug.js module, the exact path a panel
+// would use, not just that the constructor code exists unexercised.
+async function testDebugPanelExposesHealth() {
+  const relay = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
+  try {
+    const poolA = new RelayPool({ relays: [relay.url], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, publishBudget: false });
+    assert.strictEqual(debug.get('relayPool'), poolA, 'first pool instance registers under the base debug key');
+
+    // A second concurrent instance must not collide — debug.js's registry
+    // is a plain module-level Map (no window-guard), so this is real
+    // multi-instance behavior even under Node's no-`window` test env.
+    const poolB = new RelayPool({ relays: [relay.url], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, publishBudget: false });
+    assert.strictEqual(debug.get('relayPool2'), poolB, 'second concurrent instance gets a distinct incrementing debug key');
+
+    poolA.connect();
+    await Promise.race([
+      new Promise((res) => { const h = (e) => { if (e.detail.status === 'connected') { poolA.removeEventListener('relay-status', h); res(); } }; poolA.addEventListener('relay-status', h); }),
+      timed(TIMEOUT, 'debug-panel-test connect')
+    ]);
+    const report = debug.get('relayPool').healthReport();
+    assert.ok(Array.isArray(report) && report.length === 1 && report[0].url === relay.url, 'debug.get(key).healthReport() returns the real live-measured report, the exact call a panel makes');
+
+    poolA.disconnect();
+    assert.strictEqual(debug.get('relayPool'), undefined, 'disconnect() deregisters the debug key');
+    poolB.disconnect();
+    assert.strictEqual(debug.get('relayPool2'), undefined, 'second instance deregisters its own key independently');
+  } finally {
+    await relay.close();
+  }
+  console.log('  debug panel exposes health: pass (real debug.js registry round-trip)');
+}
+
 // MTU-aware fragmentation/reassembly (src/frame.js) via test.js's own real
 // round-trip, complementing scratch-verify-mtu-framing.mjs's standalone
 // deeper sweep (edge cases, stale-GC, bounded cap) with a presence check in
@@ -923,6 +1208,12 @@ async function main() {
   await testRelay();
   await testEphemeralRelay();
   await testRelayPublishBudget();
+  await testRelayHealthScoring();
+  await testUnhealthyRelayLowerScore();
+  await testAutoRotateAwayFromUnhealthy();
+  await testNoRotateToUntestedCandidate();
+  await testHealthPersistsAcrossReload();
+  await testDebugPanelExposesHealth();
   testFrameFragmentation();
   await testProfile();
   testBansModerationDepth();

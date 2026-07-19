@@ -205,6 +205,59 @@ publish/subscribe/receive — deterministic and CI-independent while staying
 inside the repo's real-services-only test discipline (a real relay process,
 just short-lived and unpersisted, is not a mock).
 
+## Relay health scoring, auto-rotation, persistence (src/relay-pool.js)
+
+`RelayHealth` tracks a 0-100 `rank` per relay URL, a weighted blend
+(`computeRank`) of EWMA-smoothed connect latency, EWMA-smoothed EOSE
+response latency, and a real attempt/success uptime ratio. `rank` is
+recomputed on EVERY signal that can change it, including
+`recordConnectAttempt()` itself — a relay that never once succeeds in
+connecting (e.g. genuinely unreachable) still needs its rank to fall below
+the neutral 50 default purely from repeated failed attempts, since it will
+never fire `recordConnectLatency`/`recordSustainedConnection`/
+`recordEoseLatency`, the only other rank-recomputing call sites. Forgetting
+this on `recordConnectAttempt` (a real bug found+fixed 2026-07-19: it only
+incremented `attempts` without recomputing `rank`) silently freezes a
+never-connecting relay's rank at 50 forever, invisible to both
+`healthReport()`'s ordering and `_maybeRotate()`'s gap check.
+
+`_maybeRotate()` is evaluated from `ws.onclose` on EVERY close, not only the
+`sustained` (open >5s then dropped) branch — a real bug found+fixed
+2026-07-19: it was called only inside the `sustained` branch, so a relay
+that fails to connect at all (the `else` branch — exactly the
+"consistently unhealthy" case auto-rotation exists to route around) never
+triggered rotation evaluation no matter how many times it failed. Rotation
+itself still requires: `urls.length > MIN_ACTIVE_RELAYS` (2), the worst
+active relay has `attempts >= 2` (a real sample floor), a fallback
+candidate with `attempts > 0` (an untested rank-50-neutral candidate never
+displaces a relay with a real track record), and a real rank gap
+`>= ROTATE_GAP` (20) between best-candidate and worst-active.
+
+Health persists via the existing storage-injection pattern (same shape as
+`NostrAuth`'s constructor `storage` option), `safeSetItem`
+(`src/safe-storage.js`)-guarded, key `ww_relay_health`, debounced 2s. A
+fresh `RelayPool` sharing that storage object loads prior scores
+(`RelayHealth.fromJSON`) instead of starting neutral — this is the actual
+cross-session persistence mechanism, exercised by
+`testHealthPersistsAcrossReload()`.
+
+Each `RelayPool` instance self-registers into `debug.js`'s plain
+module-level `registry` Map (not window-gated, so it works identically
+under Node/test as in a browser) under an incrementing key
+(`relayPool`, `relayPool2`, ...) via `debug.register`/`debug.deregister`,
+exposing `healthReport()` (best-rank-first) for a debug panel — or
+`debug.get('relayPool').healthReport()` from any consumer, including a
+test — to read live. `disconnect()` deregisters; a pool that's merely
+garbage-collected without an explicit `disconnect()` call leaks its debug
+key, matching the same discipline as its socket/timer cleanup.
+
+Live-witnessed real coverage (test.js, against `src/ephemeral-relay.js`'s
+real relay and a real currently-unbound local TCP port for the unhealthy
+case — genuine ECONNREFUSED, not a mock): `testRelayHealthScoring`,
+`testUnhealthyRelayLowerScore`, `testAutoRotateAwayFromUnhealthy`,
+`testNoRotateToUntestedCandidate`, `testHealthPersistsAcrossReload`,
+`testDebugPanelExposesHealth`.
+
 ## CI
 
 `.github/workflows/ci.yml` runs `node --check src/*.js` then installs `ws` +
@@ -215,6 +268,6 @@ CI) — that is expected, not a failure.
 
 ## test.js size cap
 
-The single integration witness (`test.js`) grows as coverage expands. The previous <=200 line cap is superseded: the file may grow freely as long as it remains a single file at repo root, mock-free for network tests, and real-services only for the relay round-trip. Current size: ~620 lines (26 tests). Do not split into a `test/` directory.
+The single integration witness (`test.js`) grows as coverage expands. The previous <=200 line cap is superseded: the file may grow freely as long as it remains a single file at repo root, mock-free for network tests, and real-services only for the relay round-trip. Current size: ~1220 lines (32+ tests, including the relay-health-scoring suite). Do not split into a `test/` directory.
 
 @.gm/next-step.md

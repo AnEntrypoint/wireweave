@@ -64,7 +64,15 @@ class RelayHealth {
     this.rank = 50;
   }
 
-  recordConnectAttempt() { this.attempts++; }
+  // Recomputes rank on every attempt, not just on a successful signal —
+  // otherwise a relay that NEVER once connects (rank frozen at the ctor's
+  // neutral 50 forever, since recordConnectLatency/recordSustainedConnection/
+  // recordEoseLatency — the only other rank-recomputing call sites — never
+  // fire for it) reads as perpetually "average" no matter how many failed
+  // attempts pile up, defeating both healthReport() ranking and
+  // _maybeRotate's rank-gap rotation trigger for the exact "never connects
+  // at all" relay auto-rotation exists to route around.
+  recordConnectAttempt() { this.attempts++; this.rank = computeRank(this); }
 
   recordConnectLatency(ms) {
     this.connectLatencyMs = ewma(this.connectLatencyMs, ms);
@@ -250,7 +258,13 @@ export class RelayPool extends EventTarget {
   // Swap the worst currently-active relay for the best-ranked unused
   // candidate (fallback pool, or a previously-tried relay we disconnected
   // from) when the gap is large enough to be worth the churn of a new
-  // connection. Never rotates below MIN_ACTIVE_RELAYS active URLs.
+  // connection. Never rotates below MIN_ACTIVE_RELAYS active URLs. Called
+  // from every ws.onclose (both the sustained-then-dropped branch AND the
+  // never-connected/failed-fast branch) — a relay that never manages to
+  // connect at all still needs evaluating here, since that IS the
+  // "consistently unhealthy" case rotation exists to route around, and its
+  // rank already reflects the failures via recordConnectAttempt's own
+  // computeRank call once attempts >= 2 (the sample floor enforced below).
   _maybeRotate() {
     if (!this.autoRotate || this._closed) return;
     const MIN_ACTIVE_RELAYS = 2;
@@ -378,11 +392,17 @@ export class RelayPool extends EventTarget {
         relay.reconnectDelay = 1000;
         health.recordSustainedConnection();
         this._scheduleSaveHealth();
-        this._maybeRotate();
       } else {
         relay.failCount++;
         relay.reconnectDelay = Math.min(relay.reconnectDelay * 2, 30000);
       }
+      // Evaluate rotation on EVERY close, not just a sustained-then-dropped
+      // connection — a relay that never manages to connect at all (the
+      // `else` branch above) is exactly the "consistently unhealthy"
+      // relay auto-rotation exists to route around, and its rank already
+      // reflects that via computeRank's uptime/latency components once
+      // `attempts >= 2` (the sample floor _maybeRotate itself enforces).
+      this._maybeRotate();
       relay._openedAt = null;
       if (this._closed) return;
       const t = setTimeout(() => this._open(url), jitter(relay.reconnectDelay));
