@@ -118,8 +118,55 @@ const fnv1a = (s) => {
 
 const safeSubId = (subId) => subId.length <= 64 ? subId : subId.slice(0, 55) + '-' + fnv1a(subId);
 
+// Shared publish budget: a real token bucket, refilled continuously at
+// refillPerSec tokens/sec up to burstCap, drained one token per publish()
+// call. This is the SINGLE choke point every module's writes go through
+// (chat, dm, bans, roles, settings, servers, data-channel signaling all
+// call pool.publish()) so one shared bucket per RelayPool instance budgets
+// abuse across all of them at once, rather than each module needing (and
+// forgetting) its own independent limiter — chat.js's own 5-per-10s limiter
+// stays as an app-level UX throttle (rate-limited event + retryAfterMs for
+// a chat input box), this is the lower-level protocol-wide backstop.
+const DEFAULT_BUDGET_BURST = 30;
+const DEFAULT_BUDGET_REFILL_PER_SEC = 3;
+
+class PublishBudget {
+  constructor({ burstCap = DEFAULT_BUDGET_BURST, refillPerSec = DEFAULT_BUDGET_REFILL_PER_SEC } = {}) {
+    this.burstCap = burstCap;
+    this.refillPerSec = refillPerSec;
+    this.tokens = burstCap;
+    this.lastRefillAt = Date.now();
+  }
+
+  _refill() {
+    const now = Date.now();
+    const elapsedSec = (now - this.lastRefillAt) / 1000;
+    if (elapsedSec <= 0) return;
+    this.tokens = Math.min(this.burstCap, this.tokens + elapsedSec * this.refillPerSec);
+    this.lastRefillAt = now;
+  }
+
+  // Returns true and consumes a token if available, else false (caller
+  // decides what "budget exceeded" means — RelayPool.publish() below
+  // queues the event as pending rather than dropping it, since a
+  // rate-limited-not-lost event still eventually goes out once the bucket
+  // refills, via the same _drainPending path a disconnected relay uses).
+  tryConsume() {
+    this._refill();
+    if (this.tokens < 1) return false;
+    this.tokens -= 1;
+    return true;
+  }
+
+  retryAfterMs() {
+    this._refill();
+    if (this.tokens >= 1) return 0;
+    return Math.ceil((1 - this.tokens) / this.refillPerSec * 1000);
+  }
+}
+
 export class RelayPool extends EventTarget {
-  constructor({ relays = DEFAULT_RELAYS, verifyEvent = null, WebSocketImpl = null, storage = null, fallbackRelays = FALLBACK_RELAYS, autoRotate = true } = {}) {
+  constructor({ relays = DEFAULT_RELAYS, verifyEvent = null, WebSocketImpl = null, storage = null, fallbackRelays = FALLBACK_RELAYS, autoRotate = true, publishBudget = {} } = {}) {
     super();
     this.urls = [...relays];
     this.relays = new Map();
@@ -141,6 +188,10 @@ export class RelayPool extends EventTarget {
     for (const url of this.urls) this.health.set(url, new RelayHealth(url));
     this._loadHealth();
     this._saveHealthTimer = null;
+    // publishBudget:false disables the budget entirely (unbounded, the old
+    // behavior) — anything else (including {}) gets a real token bucket.
+    this.budget = publishBudget === false ? null : new PublishBudget(publishBudget);
+    this._budgetDrainTimer = null;
 
     // Debug-panel integration: window.__wireweave.relayPool (or relayPool2,
     // relayPool3... for additional instances) exposes healthReport() live.
@@ -254,6 +305,7 @@ export class RelayPool extends EventTarget {
     this._closed = true;
     for (const [, t] of this._reconnectTimers) clearTimeout(t);
     this._reconnectTimers.clear();
+    if (this._budgetDrainTimer) { clearTimeout(this._budgetDrainTimer); this._budgetDrainTimer = null; }
     for (const [, rec] of this._acks) { clearTimeout(rec.timer); rec.resolve(false); }
     this._acks.clear();
     for (const [, r] of this.relays) {
@@ -401,7 +453,21 @@ export class RelayPool extends EventTarget {
     this.subs.delete(subId);
   }
 
+  // Budget-gated: over-budget calls are not dropped, they're queued exactly
+  // like a disconnected-relay event (via _queuePending) and flushed by the
+  // normal _drainPending path once either a relay reconnects or, for a
+  // budget-only rejection, the next successful publish()/heal() drains the
+  // backlog opportunistically. This means a caller that publishes faster
+  // than the budget allows sees eventual delivery, not silent loss — the
+  // same "fire-and-forget with delivery confidence via publishAndWait()"
+  // contract the rest of this class already documents.
   publish(event) {
+    if (this.budget && !this.budget.tryConsume()) {
+      this._emit('rate-limited', { retryAfterMs: this.budget.retryAfterMs() });
+      this._queuePending(event, new Set());
+      this._scheduleBudgetDrain();
+      return false;
+    }
     let sent = false;
     let anyDisconnected = false;
     const sentTo = new Set();
@@ -417,6 +483,38 @@ export class RelayPool extends EventTarget {
     if (anyDisconnected || !sent) this._queuePending(event, sentTo);
     else if (event?.id) this._pendingIds.delete(event.id);
     return sent;
+  }
+
+  // Live budget introspection for a debug panel / caller backoff decision.
+  budgetStatus() {
+    if (!this.budget) return { enabled: false };
+    this.budget._refill();
+    return { enabled: true, tokens: this.budget.tokens, burstCap: this.budget.burstCap, refillPerSec: this.budget.refillPerSec, retryAfterMs: this.budget.retryAfterMs() };
+  }
+
+  // A budget-rejected publish() queues into `this.pending` exactly like a
+  // disconnected-relay event, but `this.pending` otherwise only drains on
+  // ws.onopen (a relay reconnecting) — if every relay stays connected the
+  // whole time, a budget-queued event needs its OWN retry path once tokens
+  // refill, or it would sit queued until PENDING_TTL_MS expiry and get
+  // silently dropped despite the relay connection being perfectly healthy.
+  // One timer, scheduled only while budget-queued events are outstanding
+  // (never a standing interval), retries a real drain against every
+  // currently-open relay once the bucket should have refilled a token.
+  _scheduleBudgetDrain() {
+    if (this._budgetDrainTimer || !this.budget || this._closed) return;
+    const delay = Math.max(50, this.budget.retryAfterMs());
+    this._budgetDrainTimer = setTimeout(() => {
+      this._budgetDrainTimer = null;
+      if (this._closed) return;
+      let anyOpen = false;
+      for (const [url, relay] of this.relays) {
+        if (relay.ws?.readyState === 1) { anyOpen = true; this._drainPending(url, relay.ws); }
+      }
+      // Still budget-limited or nothing connected yet — keep retrying as
+      // long as there's a real backlog, so it isn't stranded until TTL.
+      if (this.pending.length > 0 && (anyOpen || this.budget.retryAfterMs() > 0)) this._scheduleBudgetDrain();
+    }, delay);
   }
 
   // Tracks delivery per relay URL, not just "sent to at least one" — a relay

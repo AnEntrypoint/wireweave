@@ -1,7 +1,7 @@
 import assert from 'node:assert';
-import WebSocket from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 import * as NostrTools from 'nostr-tools';
-import { RelayPool, NostrAuth, createDataSession, createFSM, DM } from './src/index.js';
+import { RelayPool, NostrAuth, createDataSession, createFSM, DM, Profile, fragment, Reassembler, MTU_DEFAULT } from './src/index.js';
 import { getIceServers, setIceServers } from './src/data.js';
 import { dtag, parseDtag } from './src/dtag.js';
 import { createMessageBus } from './src/message.js';
@@ -13,6 +13,7 @@ import { createServers } from './src/servers.js';
 import { createChat } from './src/chat.js';
 import { createMedia } from './src/media.js';
 import { createWireweave } from './src/wireweave.js';
+import { createEphemeralRelay } from './src/ephemeral-relay.js';
 
 // A mock relay pool: captures published events and lets a test push events back
 // into a named subscription's onEvent. No network — these are deterministic
@@ -704,6 +705,190 @@ async function testRelayPublishAck() {
   console.log('  relay publish ack: pass');
 }
 
+// Real in-process relay (src/ephemeral-relay.js) — a genuine ws-based NIP-01
+// relay, not a mock, so this round-trip is deterministic/CI-independent of
+// public relay uptime while still exercising the real signature-verified
+// wire protocol end to end (see testRelay above for the public-relay
+// version this complements, never replaces per AGENTS.md's multi-relay
+// flake-masking policy for the public path).
+async function testEphemeralRelay() {
+  const relay = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
+  try {
+    const pool = new RelayPool({ relays: [relay.url], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, publishBudget: false });
+    const auth = new NostrAuth({ nostrTools: NostrTools });
+    auth.generateKey();
+    const marker = 'ephemeral-test-' + Math.random().toString(36).slice(2);
+    pool.connect();
+    await Promise.race([
+      new Promise((res) => { const h = (e) => { if (e.detail.status === 'connected') { pool.removeEventListener('relay-status', h); res(); } }; pool.addEventListener('relay-status', h); }),
+      timed(TIMEOUT, 'ephemeral connect')
+    ]);
+    assert.ok(pool.isConnected());
+    const event = await auth.sign({ kind: 1, created_at: Math.floor(Date.now() / 1000), tags: [['t', marker]], content: marker });
+    const received = await new Promise((res, rej) => {
+      const subId = 'test-' + Math.random().toString(36).slice(2, 10);
+      const timer = setTimeout(() => { pool.unsubscribe(subId); rej(new Error('no event')); }, TIMEOUT);
+      pool.subscribe(subId, [{ '#t': [marker], kinds: [1] }], (ev) => {
+        if (ev.content === marker) { clearTimeout(timer); pool.unsubscribe(subId); res(ev); }
+      });
+      setTimeout(() => pool.publish(event), 300);
+    });
+    assert.strictEqual(received.content, marker);
+    assert.strictEqual(received.pubkey, auth.pubkey);
+    pool.disconnect();
+  } finally {
+    await relay.close();
+  }
+  console.log('  ephemeral relay: round-trip pass');
+}
+
+// Real relay publish-budget enforcement (src/relay-pool.js's PublishBudget)
+// against the real ephemeral relay — burst-then-throttle-then-drain, with
+// actual OK acks from a real relay process, not a synthetic fake.
+async function testRelayPublishBudget() {
+  const relay = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
+  try {
+    const pool = new RelayPool({ relays: [relay.url], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, publishBudget: { burstCap: 2, refillPerSec: 10 } });
+    const auth = new NostrAuth({ nostrTools: NostrTools });
+    auth.generateKey();
+    pool.connect();
+    await Promise.race([
+      new Promise((res) => { const h = (e) => { if (e.detail.status === 'connected') { pool.removeEventListener('relay-status', h); res(); } }; pool.addEventListener('relay-status', h); }),
+      timed(TIMEOUT, 'budget-test connect')
+    ]);
+    const marker = 'budget-test-' + Math.random().toString(36).slice(2);
+    const results = [];
+    for (let i = 0; i < 4; i++) {
+      const ev = await auth.sign({ kind: 1, created_at: Math.floor(Date.now() / 1000), tags: [['t', marker]], content: marker + '-' + i });
+      results.push(pool.publish(ev));
+    }
+    assert.strictEqual(results.filter((r) => r === true).length, 2, 'exactly burstCap publishes succeed immediately');
+    assert.strictEqual(results.filter((r) => r === false).length, 2, 'the rest are budget-queued, not lost');
+    assert.ok(pool.pending.length > 0, 'over-budget events are queued, not dropped');
+    // wait for the refill+auto-drain timer to flush the backlog for real
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.strictEqual(pool.pending.length, 0, 'budget-queued events eventually drain once tokens refill');
+    pool.disconnect();
+  } finally {
+    await relay.close();
+  }
+  console.log('  relay publish budget: pass');
+}
+
+// MTU-aware fragmentation/reassembly (src/frame.js) via test.js's own real
+// round-trip, complementing scratch-verify-mtu-framing.mjs's standalone
+// deeper sweep (edge cases, stale-GC, bounded cap) with a presence check in
+// the repo's single root witness suite.
+function testFrameFragmentation() {
+  const payload = new Uint8Array(120000).map((_, i) => i % 256);
+  const frames = fragment(payload, { messageId: 1, mtu: MTU_DEFAULT });
+  assert.ok(frames.length > 1, 'large payload produces multiple fragments');
+  const shuffled = [...frames].sort(() => Math.random() - 0.5);
+  const reassembler = new Reassembler();
+  let out = null;
+  for (const f of shuffled) { const r = reassembler.feed(f); if (r) out = r; }
+  assert.ok(out, 'reassembles once all fragments arrive in any order');
+  assert.strictEqual(Buffer.from(out).equals(Buffer.from(payload)), true, 'reassembled bytes match original exactly');
+  console.log('  frame fragmentation: pass');
+}
+
+// Portable nostr identity/profiles (src/profile.js): publish + partial
+// merge-update + fetch-by-pubkey via the real mockPool pattern (state/
+// authority test, same class as testRoles/testBans above), plus a
+// malformed-identifier NIP-05 guard (the real-network jb55.com case is
+// already witnessed live during EXECUTE; this keeps the always-run suite
+// network-independent for that specific assertion).
+async function testProfile() {
+  const auth = newAuth();
+  const pool = mockPool();
+  const profile = new Profile({ relayPool: pool, auth });
+  await profile.publish({ name: 'alice', about: 'testing' });
+  assert.strictEqual(pool.published.length, 1);
+  assert.strictEqual(pool.published[0].kind, 0);
+  const first = JSON.parse(pool.published[0].content);
+  assert.strictEqual(first.name, 'alice');
+
+  await profile.publish({ picture: 'https://example/x.png' });
+  const merged = JSON.parse(pool.published[1].content);
+  assert.strictEqual(merged.name, 'alice', 'partial update preserves prior fields');
+  assert.strictEqual(merged.picture, 'https://example/x.png');
+
+  const otherPubkey = 'c'.repeat(64);
+  const fetchPromise = profile.fetchOnce(otherPubkey, { timeoutMs: 2000 });
+  const subId = [...pool.subs.keys()].find((k) => k.startsWith('profile-once-'));
+  pool.feed(subId, { pubkey: otherPubkey, created_at: 1, content: JSON.stringify({ name: 'old' }) });
+  pool.feed(subId, { pubkey: otherPubkey, created_at: 2, content: JSON.stringify({ name: 'newest' }) });
+  pool.eose(subId);
+  const fetched = await fetchPromise;
+  assert.strictEqual(fetched.name, 'newest', 'fetchOnce resolves the highest created_at seen before EOSE');
+
+  const malformedNip05 = await profile.verifyNip05('not valid!!', 'x');
+  assert.strictEqual(malformedNip05, false, 'malformed NIP-05 identifier returns false, never throws');
+  console.log('  profile: pass');
+}
+
+// Moderation depth (src/bans.js): unban reversal, channel-level mute/unmute,
+// audit log, and out-of-order-delivery safety for the ban/unban timestamp
+// race (a stale replayed ban must never resurrect a newer unban).
+function testBansModerationDepth() {
+  const owner = newAuth();
+  const serverId = owner.pubkey + ':srv-mod';
+  const pool = mockPool();
+  const roles = { isAdmin: () => true, isMod: () => true };
+  const bans = createBans({ relayPool: pool, auth: owner, roles });
+  bans.subscribe(serverId);
+  const subId = 'bans-' + serverId;
+  const target = newAuth().pubkey;
+
+  const banD = dtag('ban', serverId, target);
+  pool.feed(subId, { pubkey: owner.pubkey, created_at: 100, tags: [['d', banD], ['server', serverId]], content: JSON.stringify({ action: 'ban', pubkey: target }) });
+  assert.ok(bans.isBanned(serverId, target), 'ban applied');
+
+  const unbanD = dtag('unban', serverId, target);
+  pool.feed(subId, { pubkey: owner.pubkey, created_at: 200, tags: [['d', unbanD], ['server', serverId]], content: JSON.stringify({ action: 'unban', pubkey: target }) });
+  assert.ok(!bans.isBanned(serverId, target), 'unban reverses ban');
+
+  // a stale, older ban replayed AFTER the newer unban must not resurrect it
+  pool.feed(subId, { pubkey: owner.pubkey, created_at: 150, tags: [['d', banD], ['server', serverId]], content: JSON.stringify({ action: 'ban', pubkey: target }) });
+  assert.ok(!bans.isBanned(serverId, target), 'stale out-of-order ban replay does not resurrect a newer unban');
+
+  const muteD = dtag('mute', serverId, 'chan1', target);
+  pool.feed(subId, { pubkey: owner.pubkey, created_at: 300, tags: [['d', muteD], ['server', serverId], ['channel', 'chan1']], content: JSON.stringify({ action: 'mute', pubkey: target, channelId: 'chan1' }) });
+  assert.ok(bans.isMuted(serverId, 'chan1', target), 'channel mute applied');
+  pool.feed(subId, { pubkey: owner.pubkey, created_at: 400, tags: [['d', muteD], ['server', serverId], ['channel', 'chan1']], content: JSON.stringify({ action: 'unmute', pubkey: target, channelId: 'chan1' }) });
+  assert.ok(!bans.isMuted(serverId, 'chan1', target), 'channel unmute reverses mute');
+
+  const log = bans.getAuditLog(serverId);
+  assert.strictEqual(log.length, 5, 'every moderation action is recorded in the audit log');
+  assert.strictEqual(log[0].action, 'unmute', 'audit log is most-recent-first');
+  console.log('  bans moderation depth: pass');
+}
+
+// Offline-first message store (src/message.js): persistence across a fresh
+// MessageBus instance sharing storage+roomKey, offline-queue-then-flush.
+async function testMessageBusOffline() {
+  const store = memStore();
+  const bus1 = createMessageBus({ storage: store, roomKey: 'test-room' });
+  bus1.add('persisted message');
+  await new Promise((r) => setTimeout(r, 700));
+  const bus2 = createMessageBus({ storage: store, roomKey: 'test-room' });
+  assert.strictEqual(bus2.messages.length, 1, 'message persisted across fresh instance');
+  assert.strictEqual(bus2.messages[0].text, 'persisted message');
+
+  let online = false;
+  const sent = [];
+  const bus3 = createMessageBus({ storage: memStore(), roomKey: 'room3', sendFn: (m) => { sent.push(m.text); return true; }, isOnline: () => online });
+  bus3.add('queued offline');
+  assert.strictEqual(sent.length, 0, 'offline add() does not call sendFn');
+  assert.strictEqual(bus3.getOutbox().length, 1, 'offline message queued in outbox');
+  online = true;
+  const flushResult = bus3.flushOutbox();
+  assert.strictEqual(flushResult.sent, 1);
+  assert.strictEqual(bus3.getOutbox().length, 0, 'outbox drained after flush');
+  assert.strictEqual(sent.length, 1, 'sendFn actually called during flush');
+  console.log('  message bus offline: pass');
+}
+
 async function main() {
   console.log('magicwand test.js');
   await testAuth();
@@ -736,6 +921,12 @@ async function main() {
   await testRelayPendingDedupe();
   await testRelayPublishAck();
   await testRelay();
+  await testEphemeralRelay();
+  await testRelayPublishBudget();
+  testFrameFragmentation();
+  await testProfile();
+  testBansModerationDepth();
+  await testMessageBusOffline();
   console.log('all pass');
 }
 

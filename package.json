@@ -10,9 +10,11 @@
     "./wireweave": "./src/wireweave.js",
     "./relay-pool": "./src/relay-pool.js",
     "./auth": "./src/auth.js",
+    "./profile": "./src/profile.js",
     "./fsm": "./src/fsm.js",
     "./voice": "./src/voice.js",
     "./data": "./src/data.js",
+    "./frame": "./src/frame.js",
     "./chat": "./src/chat.js",
     "./channels": "./src/channels.js",
     "./servers": "./src/servers.js",
@@ -22,7 +24,9 @@
     "./settings": "./src/settings.js",
     "./media": "./src/media.js",
     "./pages": "./src/pages.js",
-    "./debug": "./src/debug.js"
+    "./debug": "./src/debug.js",
+    "./dm": "./src/dm.js",
+    "./ephemeral-relay": "./src/ephemeral-relay.js"
   },
   "files": [
     "src",
