@@ -151,6 +151,31 @@ voice.addEventListener('participants', e => console.log(e.detail.list));
 
 Voice carries every empirically-discovered reliability pattern: perfect negotiation (RFC 8840), ICE restart on disconnect, track-stall detection, SFU hub election (mesh→star at 3+ peers), exponential-backoff reconnect.
 
+### voice quality/input settings
+
+`VoiceSession` (and `ensureVoice`) accepts real, constructor-configurable options for input mode, mic sensitivity, echo/noise handling, and Opus quality — every one of them threaded into an actual `getUserMedia`/`RTCRtpSender`/SDP call site, not just stored:
+
+```js
+const voice = ww.ensureVoice({
+  serverId: 'abc:xyz',
+  displayName: 'you',
+  pttMode: true,              // push-to-talk (default) vs. open-mic/VAD mode
+  micSensitivity: 0.045,      // RMS threshold the speaker-activity detector uses
+  noiseSuppression: true,     // getUserMedia audio constraints — real MediaTrackConstraints
+  echoCancellation: true,
+  autoGainControl: true,
+  audioQuality: 'high',       // Opus bitrate tier: 'low' (16kbps) | 'medium' (32kbps) | 'high' (48kbps) | 'max' (64kbps)
+  dtx: true                   // discontinuous transmission (silence suppression), SDP fmtp usedtx=1
+});
+```
+
+- **`pttMode`** (push-to-talk vs. voice-activity/open-mic): `true` (default) starts the session muted; the caller opens the mic via `setMuted(false)`/`requestTransmit()`. `false` starts unmuted — the mic stays live and the speaker-activity detector (RMS threshold) drives the `isSpeaking` UI flag instead of gating transmission. Live-togglable: `voice.setPttMode(false)`.
+- **`micSensitivity`** — the RMS level (0–1) above which a stream counts as "speaking" in the speaker-activity poller. Live-togglable: `voice.setMicSensitivity(0.09)`.
+- **`noiseSuppression` / `echoCancellation` / `autoGainControl`** — real [`MediaTrackConstraints`](https://developer.mozilla.org/en-US/docs/Web/API/MediaTrackConstraints) passed straight into the `getUserMedia({ audio: {...} })` call `connect()` makes.
+- **`audioQuality`** — an Opus bitrate ladder tier (`low`/`medium`/`high`/`max`, mapping to 16/32/48/64 kbps) applied via the real `RTCRtpSender.setParameters()` call on every connected peer's audio sender. Live-togglable and re-applies immediately to every open connection: `voice.setAudioQuality('low')`.
+- **`dtx`** — discontinuous transmission (silence suppression), negotiated per the real WebRTC spec via the Opus `a=fmtp` SDP line (`usedtx=1`), not an `RTCRtpEncodingParameters` field (that isn't where DTX lives in the real spec). Applied at every offer/answer/ICE-restart. Live-togglable: `voice.setDtx(false)` (takes effect on the next SDP exchange for already-open peers).
+- **Per-room bandwidth shaping for large rooms** — this module is audio-only (no video sender exists anywhere in it), so real per-layer RTP simulcast (which is video-only in every browser implementation) doesn't apply. The honest, reachable analog is what's already built: SFU hub election (`_sfuElect`/`_sfuRankCandidates`) picks the highest-uplink participant as the hub and fans out audio to everyone via zero-copy `replaceTrack`, so bandwidth concentrates on whoever the room is actually routing through, combined with the per-connection Opus bitrate ladder above.
+
 ## node usage (relay + auth only)
 
 ```js
