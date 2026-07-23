@@ -40,3 +40,9 @@ dist/
 .gm/browser-profile-*/
 .gm/pw-sock-*/
 .agentplug-kv/
+
+# StaticHandler precompression siblings (mtime-gated, regenerated on demand)
+*.br
+*.br.meta
+*.gz
+*.gz.meta
