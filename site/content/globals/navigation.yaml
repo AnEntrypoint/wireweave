@@ -1,0 +1,9 @@
+links:
+  - label: docs
+    href: "#docs"
+  - label: api
+    href: "#api"
+  - label: install
+    href: "#install"
+  - label: GitHub
+    href: https://github.com/AnEntrypoint/wireweave

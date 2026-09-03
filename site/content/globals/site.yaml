@@ -1,0 +1,11 @@
+title: "wireweave"
+tagline: "nostr + webrtc. the networking layer for 247420."
+description: "wireweave is the networking layer pulled out of zellous. p2p voice, chat, channels, servers, ban/role/settings — every byte moves through public nostr relays. import, wire, ship."
+repo: "https://github.com/AnEntrypoint/wireweave"
+url: "https://anentrypoint.github.io/wireweave/"
+year: 2026
+accent_from: "#247420"
+accent_to: "#3A9A34"
+glyph: "W"
+code: "031"
+category: "voice"
