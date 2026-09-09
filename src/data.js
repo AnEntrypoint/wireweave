@@ -261,7 +261,7 @@ export class DataSession extends EventTarget {
     const fsmActor = this.xstate.createActor(this.fsm.peerMachine);
     fsmActor.subscribe((snap) => { const p = this.peers.get(peerPubkey); if (p) p.state = snap.value; });
     fsmActor.start();
-    const peer = { pc: null, dc: null, dcUnreliable: null, reassembler: new Reassembler({ staleMs: this.fragmentStaleMs }), pendingCandidates: [], bufferedCandidates: [], iceTimer: null, disconnectTimer: null, failCount: 0, state: 'new', fsm: fsmActor, remoteDescSet: false };
+    const peer = { pc: null, dc: null, dcUnreliable: null, reassembler: new Reassembler({ staleMs: this.fragmentStaleMs }), pendingCandidates: [], bufferedCandidates: [], iceTimer: null, sentFirstCandidate: false, disconnectTimer: null, failCount: 0, state: 'new', fsm: fsmActor, remoteDescSet: false };
     this.peers.set(peerPubkey, peer);
     const pc = this.createPeerConnection({ iceServers: this.iceServers, bundlePolicy: 'max-bundle', iceCandidatePoolSize: 4, iceTransportPolicy: 'all' });
     peer.pc = pc;
@@ -273,6 +273,21 @@ export class DataSession extends EventTarget {
     const pc = peer.pc;
     pc.onicecandidate = (ev) => {
       if (!ev.candidate) return;
+      // The very first candidate gathered for a peer goes out immediately,
+      // uncoupled from the trailing debounce below — otherwise the remote
+      // side can't start connectivity checks until 500ms of silence, adding
+      // that much straight to connection-setup latency for every session.
+      // Every candidate after the first still batches through the debounce
+      // (unchanged): candidates typically arrive in a fast burst once
+      // gathering starts, and batching those into one signaling event still
+      // matters for relay/signaling volume — only the first one benefits
+      // from skipping the wait, since it's the one blocking the remote peer
+      // from starting at all.
+      if (!peer.sentFirstCandidate) {
+        peer.sentFirstCandidate = true;
+        this._publishSignal(peerPubkey, 'ice', [ev.candidate.toJSON()]);
+        return;
+      }
       peer.pendingCandidates.push(ev.candidate.toJSON());
       if (peer.iceTimer) clearTimeout(peer.iceTimer);
       peer.iceTimer = setTimeout(() => { if (peer.pendingCandidates.length) { this._publishSignal(peerPubkey, 'ice', peer.pendingCandidates.splice(0)); peer.iceTimer = null; } }, 500);
