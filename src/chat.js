@@ -165,7 +165,10 @@ export class Chat extends EventTarget {
       const cached = this.messages.find(m => m.id === replyTag[1]);
       replyTo = cached ? { id: cached.id, userId: cached.userId, content: cached.content } : { id: replyTag[1] };
     }
-    return { id: event.id, type: 'text', userId: event.pubkey, content: event.content, timestamp: event.created_at * 1000, tags: tTags, replyTo };
+    const imeta = (event.tags || []).find(t => t[0] === 'imeta');
+    const field = (key) => { const f = imeta && imeta.slice(1).find(x => typeof x === 'string' && x.startsWith(key + ' ')); return f ? f.slice(key.length + 1) : null; };
+    const media = imeta && field('url') ? { url: field('url'), mime: field('m') || '', size: Number(field('size')) || null } : null;
+    return { id: event.id, type: 'text', userId: event.pubkey, content: event.content, timestamp: event.created_at * 1000, tags: tTags, replyTo, ...(media ? { media } : {}) };
   }
 
   _addMessage(msg) {
