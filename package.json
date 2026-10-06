@@ -54,7 +54,7 @@
     "nostr-tools": "^2.7.0"
   },
   "devDependencies": {
-    "nostr-tools": "^2.23.12",
+    "nostr-tools": "^2.25.2",
     "ws": "^8.21.1"
   }
 }
