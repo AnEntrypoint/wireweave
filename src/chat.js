@@ -1,3 +1,6 @@
+const DELETION_LOOKBACK_S = 7 * 86400;
+const DELETION_LIMIT = 300;
+
 const hexChannelId = async (channelId, serverId) => {
   const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode((serverId || 'default') + ':' + channelId));
   return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -113,11 +116,13 @@ export class Chat extends EventTarget {
     this.deletedIds = this.deletedIds || new Set();
     this._emit('messages', { list: [] });
     const chanHex = await hexChannelId(channelId, serverId);
+    if (this.activeChannelId !== channelId) return;
     const collected = [];
     this.pool.subscribe('chat-' + channelId,
       [{ kinds: [42], '#e': [chanHex], limit: 50 }],
       (ev) => { if (!this._isBlocked(serverId, ev.pubkey) && !this.deletedIds.has(ev.id)) collected.push(this._eventToMsg(ev)); },
       () => {
+        if (this.activeChannelId !== channelId) return;
         collected.sort((a, b) => a.timestamp - b.timestamp);
         this.messages = collected;
         this._emit('messages', { list: collected });
@@ -132,7 +137,7 @@ export class Chat extends EventTarget {
     // messages (deletedIds persists across the whole channel session), so a
     // deletion that arrives before its target message still takes effect.
     this.pool.subscribe('chat-deletions-' + channelId,
-      [{ kinds: [5] }],
+      [{ kinds: [5], since: Math.floor(Date.now() / 1000) - DELETION_LOOKBACK_S, limit: DELETION_LIMIT }],
       (ev) => {
         const targetId = (ev.tags || []).find((t) => t[0] === 'e')?.[1];
         if (!targetId) return;

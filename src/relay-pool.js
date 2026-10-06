@@ -418,14 +418,20 @@ export class RelayPool extends EventTarget {
       const event = msg[2];
       if (!event?.id) return;
       if (event.created_at > Math.floor(Date.now() / 1000) + 300) return;
-      if (this.seen.has(event.id)) return;
+      const sub = this.subs.get(subId);
+      if (sub) {
+        if (sub.seen.has(event.id)) return;
+      } else if (this.seen.has(event.id)) return;
       if (this.verifyEvent) {
         try { if (!this.verifyEvent(event)) return; } catch { return; }
       }
-      lruTouch(this.seen, event.id);
-      const sub = this.subs.get(subId);
+      if (sub) {
+        sub.seen.add(event.id);
+        if (sub.seen.size > SEEN_MAX) sub.seen.delete(sub.seen.values().next().value);
+      }
+      const firstSighting = lruTouch(this.seen, event.id);
       sub?.onEvent?.(event);
-      this._emit('event', { subId, event });
+      if (firstSighting) this._emit('event', { subId, event });
     } else if (type === 'EOSE') {
       const relay = this.relays.get(url);
       const sentAt = relay?._eoseReqSentAt?.get(subId);
@@ -449,7 +455,7 @@ export class RelayPool extends EventTarget {
 
   subscribe(subId, filters, onEvent, onEose) {
     subId = safeSubId(subId);
-    this.subs.set(subId, { filters, onEvent, onEose });
+    this.subs.set(subId, { filters, onEvent, onEose, seen: new Set() });
     for (const [, relay] of this.relays) {
       if (relay.ws?.readyState === 1) {
         relay.ws.send(JSON.stringify(['REQ', subId, ...filters]));

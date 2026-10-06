@@ -88,7 +88,7 @@ export const createWireweave = ({
     return voice;
   };
 
-  const setCurrentChannel = (id) => { currentChannelId = id; if (id) chat.loadHistory(id); };
+  const setCurrentChannel = (id) => { currentChannelId = id; return id ? chat.loadHistory(id) : Promise.resolve(); };
 
   // DM is lazy: nip44 encryption requires a privkey-backed signer (not extension)
   // and nostr-tools built with nip44. Constructing it eagerly would throw for
