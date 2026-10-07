@@ -9,11 +9,7 @@ export class Bans extends EventTarget {
     this.pool = relayPool; this.auth = auth; this.roles = roles;
     this.store = new Map();
     this.subs = new Map();
-    // In-memory audit log of moderation actions seen via subscribe(), most
-    // recent first, capped at AUDIT_LOG_MAX. Rebuilt purely from the same
-    // real relay-published events the ban/timeout/kick/unban/mute state
-    // already derives from — no separate write path, so the log can never
-    // drift from the actual enforced state.
+
     this.auditLog = [];
   }
 
@@ -26,10 +22,6 @@ export class Bans extends EventTarget {
     return !!t && t.expiry > Math.floor(Date.now() / 1000);
   }
 
-  // Same protection roles.js already applies to setRole(): a mere admin
-  // (not the owner) can never take a punitive action against the owner or
-  // against another admin — otherwise any admin could ban/timeout/mute the
-  // owner or a co-admin and effectively lock out a higher-privileged user.
   _assertCanTarget(serverId, targetPubkey) {
     if (!this.roles) return;
     if (this.roles.isOwner(serverId)) return;
@@ -51,11 +43,6 @@ export class Bans extends EventTarget {
     this.pool.publish(signed);
   }
 
-  // Reverses a prior ban. A separate 'unban' d-tag namespace (not a delete
-  // of the 'ban' event — nostr relays aren't guaranteed to honor NIP-09
-  // deletion requests, and a replaceable/addressable ban event has no
-  // built-in revocation) whose presence with a newer timestamp than the
-  // matching ban event means "no longer banned" — see _applyEvent's ordering.
   async unban(serverId, pubkey) {
     if (!this.auth?.isLoggedIn()) throw new Error('Not logged in');
     if (this.roles && !this.roles.isAdmin(serverId)) throw new Error('Insufficient permissions');
@@ -82,11 +69,6 @@ export class Bans extends EventTarget {
     this.pool.publish(signed);
   }
 
-  // Explicit early-clear of an active timeout — publishing a new timeout
-  // event with expiry already in the past is the wire-level mechanism
-  // (mirrors how the existing subscribe() handler already deletes an
-  // expired timeout from the local store), exposed as its own method so a
-  // caller doesn't have to know that trick.
   async clearTimeout(serverId, pubkey) {
     if (!this.auth?.isLoggedIn()) throw new Error('Not logged in');
     if (this.roles && !this.roles.isAdmin(serverId)) throw new Error('Insufficient permissions');
@@ -111,9 +93,6 @@ export class Bans extends EventTarget {
     this.pool.publish(signed);
   }
 
-  // Channel-level mute (distinct from a server-wide ban/timeout): silences
-  // one pubkey in one channel only, e.g. for a channel-specific moderator
-  // without server-wide admin rights over the whole server's ban list.
   async mute(serverId, channelId, pubkey) {
     if (!this.auth?.isLoggedIn()) throw new Error('Not logged in');
     if (this.roles && !this.roles.isMod(serverId)) throw new Error('Insufficient permissions');
@@ -139,9 +118,6 @@ export class Bans extends EventTarget {
     this.pool.publish(signed);
   }
 
-  // Most-recent-first audit trail of every moderation action seen via
-  // subscribe() for this serverId (or all servers if serverId is omitted),
-  // capped at AUDIT_LOG_MAX entries.
   getAuditLog(serverId = null) {
     return serverId ? this.auditLog.filter((e) => e.serverId === serverId) : this.auditLog.slice();
   }
@@ -172,18 +148,9 @@ export class Bans extends EventTarget {
           const data = this.store.get(serverId) || { banned: [], timeouts: {}, kicked: [], muted: {}, _banTs: {} };
           data.muted = data.muted || {};
           data._banTs = data._banTs || {};
-          // A relay-delivered event always carries created_at; default to
-          // "now" only for a malformed/missing value so a legitimate action
-          // is never silently dropped by an always-false comparison against
-          // undefined (0 <= undefined is false in JS).
+
           const eventTs = Number.isFinite(event.created_at) ? event.created_at : Math.floor(Date.now() / 1000);
 
-          // ban/unban share one addressable slot per pubkey (different
-          // d-tag namespaces, so a relay won't collapse them as the same
-          // replaceable event) — track the newest-seen timestamp per pubkey
-          // so an out-of-order-delivered older event never undoes a newer
-          // decision, same "latest wins" discipline roles.js/settings.js
-          // already apply to their own single-namespace replaceable state.
           if (parsed.ns === 'ban' && pubkey) {
             if ((data._banTs[pubkey] || 0) <= eventTs) {
               data._banTs[pubkey] = eventTs;
@@ -203,11 +170,7 @@ export class Bans extends EventTarget {
             else if (data.timeouts?.[pubkey]) delete data.timeouts[pubkey];
           } else if (parsed.ns === 'mute' && pubkey) {
             const body = JSON.parse(event.content);
-            // d-tag shape is 'mute:<serverId>:<channelId>:<pubkey>' (see
-            // mute()/unmute() above) -> parts = [serverId, channelId,
-            // pubkey] after parseDtag strips the namespace; body.channelId
-            // is the primary source (always present, set by mute()/unmute())
-            // with the d-tag position as a defensive fallback.
+
             const channelId = body.channelId ?? parsed.parts[1];
             data.muted[channelId] = data.muted[channelId] || [];
             if (body.action === 'unmute') data.muted[channelId] = data.muted[channelId].filter((p) => p !== pubkey);

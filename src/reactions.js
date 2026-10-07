@@ -1,13 +1,11 @@
-// NIP-25 (kind:7) reactions on native kind:42 channel messages. Aggregation is
-// client-side, last-write-wins per (pubkey, target) -- a user's newest reaction
-// event replaces their prior one, matching how a real Nostr client displays
-// "who reacted with what" without needing a relay-side NIP-25 aggregator.
+
+
 export class Reactions extends EventTarget {
   constructor({ relayPool, auth }) {
     super();
     if (!relayPool || !auth) throw new Error('Reactions: relayPool + auth required');
     this.pool = relayPool; this.auth = auth;
-    this.byTarget = new Map(); // targetEventId -> Map(pubkey -> {content, id, created_at})
+    this.byTarget = new Map();
     this.subs = new Map();
   }
 
@@ -18,9 +16,7 @@ export class Reactions extends EventTarget {
     if (targetAuthorPubkey) tags.push(['p', targetAuthorPubkey]);
     const signed = await this.auth.sign({ kind: 7, created_at: Math.floor(Date.now() / 1000), tags, content });
     this.pool.publish(signed);
-    // Locally-originated: this IS the user's own fresh intent, so it always
-    // wins over whatever's cached for them, even at equal created_at
-    // (second-granularity timestamps make same-second re-reactions common).
+
     this._applyReaction(signed, { local: true });
     return signed;
   }

@@ -20,3 +20,6 @@ export { Mutes, createMutes } from './mutes.js';
 export { Forum, createForum } from './forum.js';
 export { createWireweave } from './wireweave.js';
 export * as debug from './debug.js';
+export { Feedback, createFeedback } from './feedback.js';
+export { createFeedbackTools, feedbackToolDefinitions } from './feedback-tools.js';
+export { mountFeedbackForm } from './feedback-form.js';

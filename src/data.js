@@ -1,10 +1,5 @@
 import { fragment, Reassembler, MTU_DEFAULT } from './frame.js';
 
-// STUN handles same-LAN / non-symmetric-NAT cases; TURN is required when both
-// peers sit behind symmetric or restricted-cone NAT (typical home routers,
-// most carrier-grade NAT, corporate networks). UDP, TCP, and TLS TURN variants
-// are included so at least one path survives strict egress filtering. Kept in
-// sync with voice.js's DEFAULT_ICE_SERVERS.
 const DEFAULT_ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -14,7 +9,7 @@ const DEFAULT_ICE_SERVERS = [
   { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
   { urls: 'turn:global.relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
   { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-  // Legacy hostname kept as a low-priority fallback in case some deployments still resolve it.
+
   { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
 ];
 let ICE_SERVERS = DEFAULT_ICE_SERVERS;
@@ -22,13 +17,6 @@ let iceServersOverridden = false;
 export const setIceServers = (list) => { if (Array.isArray(list) && list.length) { ICE_SERVERS = list; iceServersOverridden = true; } };
 export const getIceServers = () => ICE_SERVERS.slice();
 
-// The bundled TURN entries use the openrelayproject public demo credentials
-// (metered.ca's shared, rate-limited, no-SLA relay). Fine for local dev/testing,
-// but a real hosted deployment that never calls setIceServers() is silently
-// depending on a third party's free-tier relay for every NAT-restricted peer —
-// warn once, at first connect, so that's discoverable instead of a mystery
-// "some players can never connect" bug report. Never fires on localhost/loopback
-// dev servers, and never fires once the host has provided its own iceServers.
 let defaultTurnWarned = false;
 const isHostedDeployment = () => {
   try {
@@ -53,13 +41,7 @@ const PRESENCE_EXPIRY = 300000;
 const HEARTBEAT = 30000;
 const DISCONNECT_GRACE = 8000;
 const DC_LABEL = 'wireweave-data';
-// Second, parallel data channel per peer for large binary/unreliable
-// traffic (game snapshots etc) — {ordered:false, maxRetransmits:0} is the
-// real WebRTC config for "send it once, don't retransmit, don't block on
-// order" (UDP-like), distinct from DC_LABEL's default reliable/ordered
-// channel above. Large payloads sent on it are auto-fragmented per
-// frame.js's MTU-aware framing since a real RTCDataChannel message has a
-// practical ~16KB limit before cross-browser fragmentation quirks.
+
 const DC_LABEL_UNRELIABLE = 'wireweave-data-unreliable';
 const UNRELIABLE_DC_OPTIONS = { ordered: false, maxRetransmits: 0 };
 
@@ -68,13 +50,6 @@ const deriveRoomId = async (namespace, room) => {
   return 'wwdata' + Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
 };
 
-// Default: a plain browser-shaped RTCPeerConnection. Node hosts that want
-// deeper NAT-traversal tuning (ICE/UDP port muxing, a fixed port range for
-// port-forwarded firewalls, a SOCKS5/HTTP proxy for locked-down networks)
-// can pass createPeerConnection to construct their own native peer (e.g.
-// node-datachannel's PeerConnection with its richer RtcConfig) and hand it
-// back wrapped as an RTCPeerConnection-shaped object — wireweave itself never
-// depends on any Node-specific WebRTC binding.
 const defaultCreatePeerConnection = (config) => new RTCPeerConnection(config);
 
 export class DataSession extends EventTarget {
@@ -92,10 +67,7 @@ export class DataSession extends EventTarget {
     this.heartbeat = null; this.joinTs = 0;
     this.retrySchedule = {};
     this.displayName = '';
-    // MTU-aware unreliable channel: real WebRTC datachannel messages have a
-    // practical ~16KB limit before cross-browser fragmentation quirks —
-    // mtu is configurable (e.g. larger for controlled/native peers such as
-    // node-datachannel) but defaults to the safe browser-wide value.
+
     this.mtu = mtu;
     this.fragmentStaleMs = fragmentStaleMs;
     this._nextMessageId = 0;
@@ -169,14 +141,6 @@ export class DataSession extends EventTarget {
     return n;
   }
 
-  // Sends a large binary payload over the unreliable/unordered channel,
-  // auto-fragmenting per this.mtu (frame.js). Each fragment is sent as its
-  // own dc.send() call — real WebRTC {ordered:false, maxRetransmits:0}
-  // datachannel semantics mean any individual fragment can be dropped;
-  // the receiver's Reassembler tolerates that (see _wireDataChannel above).
-  // Returns false without sending anything if the unreliable channel isn't
-  // open, or if fragmentation itself throws (e.g. payload exceeds the
-  // wire-format's fragment-count ceiling — see frame.js maxPayloadBytes).
   sendUnreliable(peerPubkey, payload) {
     const peer = this.peers.get(peerPubkey);
     if (!peer?.dcUnreliable || peer.dcUnreliable.readyState !== 'open') return false;
@@ -200,11 +164,6 @@ export class DataSession extends EventTarget {
     return n;
   }
 
-  // Per-session messageId counter, uint16 wraparound (see frame.js header
-  // format + the mtu-messageid-wraparound PRD note: collisions are scoped
-  // to the same peer's own overlapping in-flight traffic within staleMs,
-  // an accepted small-probability risk matching typical UDP-sequence-number
-  // designs rather than something solved perfectly here).
   _nextMessageIdFor() {
     const id = this._nextMessageId;
     this._nextMessageId = (this._nextMessageId + 1) & 0xffff;
@@ -273,16 +232,7 @@ export class DataSession extends EventTarget {
     const pc = peer.pc;
     pc.onicecandidate = (ev) => {
       if (!ev.candidate) return;
-      // The very first candidate gathered for a peer goes out immediately,
-      // uncoupled from the trailing debounce below — otherwise the remote
-      // side can't start connectivity checks until 500ms of silence, adding
-      // that much straight to connection-setup latency for every session.
-      // Every candidate after the first still batches through the debounce
-      // (unchanged): candidates typically arrive in a fast burst once
-      // gathering starts, and batching those into one signaling event still
-      // matters for relay/signaling volume — only the first one benefits
-      // from skipping the wait, since it's the one blocking the remote peer
-      // from starting at all.
+
       if (!peer.sentFirstCandidate) {
         peer.sentFirstCandidate = true;
         this._publishSignal(peerPubkey, 'ice', [ev.candidate.toJSON()]);
@@ -312,9 +262,7 @@ export class DataSession extends EventTarget {
       if (pc.connectionState === 'closed') this._closePeer(peerPubkey);
     };
     if (isOfferer) {
-      // Both data channels MUST be created before createOffer() below — a
-      // channel created after the offer is negotiated is never included in
-      // that offer's SDP, so the answerer would never see it.
+
       try {
         const dc = pc.createDataChannel(DC_LABEL, this.dcOptions);
         peer.dc = dc; this._wireDataChannel(dc, peer, peerPubkey, false);
@@ -344,12 +292,7 @@ export class DataSession extends EventTarget {
       dc.onmessage = (e) => this._emit('data', { peerPubkey, data: e.data, unreliable: false });
       return;
     }
-    // Unreliable channel carries MTU-framed fragments (see frame.js) — feed
-    // each incoming fragment into this peer's Reassembler and only emit
-    // 'data' once a full message is reassembled. A permanently-dropped
-    // fragment (real risk on {ordered:false, maxRetransmits:0}) never
-    // blocks delivery of the next message; its buffer is evicted by the
-    // Reassembler's own staleMs sweep, run lazily on every feed().
+
     dc.onmessage = (e) => {
       let payload;
       try { payload = e.data instanceof ArrayBuffer ? e.data : (e.data?.buffer ?? e.data); } catch { return; }

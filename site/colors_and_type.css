@@ -1,7 +1,5 @@
-/* ============================================================
-   Design tokens — brand palette + type scale + motion
-   Loads before any consumer rule; all var(--*) refs resolve.
-   ============================================================ */
+
+
 :root {
   --paper:        #EFE9DD;
   --ink:          #0B0B09;
@@ -43,19 +41,14 @@
   --r-3:          0;
   --r-pill:       9999px;
 
-  /* Extended brand palette */
   --flame:        #FF5C1A;
   --sky:          #3B82F6;
 
-  /* Foreground / background aliases — resolved after panel tokens are set;
-     these are reset below once panel tokens exist, but raw defaults here
-     ensure no unsatisfied var() at parse time if panel tokens are absent. */
   --fg:           #0B0B09;
   --fg-3:         #6d675b;
   --bg:           #EFE9DD;
   --bg-2:         #ece5d8;
 
-  /* Colorful-mono palette — canonical hue per slot */
   --mono-1:       var(--green);
   --mono-2:       var(--purple);
   --mono-3:       var(--mascot);
@@ -63,7 +56,6 @@
   --mono-5:       var(--flame);
   --mono-6:       var(--sky);
 
-  /* Spacing scale (4px base) */
   --space-1:      4px;
   --space-2:      8px;
   --space-3:      12px;
@@ -73,14 +65,11 @@
   --space-7:      48px;
   --space-8:      64px;
 
-  /* Border widths */
   --bw-hair:      1px;
   --bw-rule:      2px;
 
-  /* Measure */
   --measure:      72ch;
 
-  /* Extended type scale */
   --fs-body:      13px;
   --fs-lg:        14px;
   --fs-sm:        12px;
@@ -90,19 +79,15 @@
   --fs-h3:        14px;
   --fs-h4:        13px;
 
-  /* Extended line heights */
   --lh-base:      1.5;
   --lh-long:      1.6;
 
-  /* Extended letter spacing */
   --tr-label:     0.08em;
   --tr-caps:      0.05em;
 
-  /* Font body alias */
   --ff-body:      var(--ff-prose);
 }
 
-/* Rows: no separators, hover surface tint instead */
 .row { background: transparent; transition: background var(--dur-snap) var(--ease); }
 .row:hover { background: var(--surface-2); }
 [data-theme="ink"] .row:hover { background: var(--surface-ink-2); }
@@ -118,11 +103,6 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* ============================================================
-   Semantic type classes
-   ============================================================ */
-
-/* Hero — project name, once per page. Archivo Black territory. */
 .t-hero, h1.hero {
   font-family: var(--ff-display);
   font-size: clamp(64px, 12vw, var(--fs-hero));
@@ -132,7 +112,6 @@ body {
   margin: 0;
 }
 
-/* h1 — page title */
 .t-h1, h1 {
   font-family: var(--ff-display);
   font-size: clamp(40px, 6vw, var(--fs-h1));
@@ -142,7 +121,6 @@ body {
   margin: 0;
 }
 
-/* h2 — section */
 .t-h2, h2 {
   font-family: var(--ff-display);
   font-size: var(--fs-h2);
@@ -152,7 +130,6 @@ body {
   margin: 0;
 }
 
-/* h3 — subsection (mono, colorful-eligible) */
 .t-h3, h3 {
   font-family: var(--ff-mono);
   font-size: var(--fs-h3);
@@ -162,7 +139,6 @@ body {
   margin: 0;
 }
 
-/* h4 */
 .t-h4, h4 {
   font-family: var(--ff-mono);
   font-size: var(--fs-h4);
@@ -171,14 +147,12 @@ body {
   margin: 0;
 }
 
-/* Body UI — mono, the default UI voice */
 .t-body {
   font-family: var(--ff-mono);
   font-size: var(--fs-body);
   line-height: var(--lh-base);
 }
 
-/* Long-form prose — SANS, not serif. Space Grotesk. */
 .t-prose, .prose p {
   font-family: var(--ff-body);
   font-size: var(--fs-lg);
@@ -189,7 +163,6 @@ body {
 }
 .prose p { margin: 0 0 var(--space-4) 0; }
 
-/* Label — mono caps, terminal voice */
 .t-label {
   font-family: var(--ff-mono);
   font-size: var(--fs-xs);
@@ -198,14 +171,12 @@ body {
   font-weight: 500;
 }
 
-/* Meta — mono, small, dim */
 .t-meta {
   font-family: var(--ff-mono);
   font-size: var(--fs-xs);
   color: var(--fg-3);
 }
 
-/* Micro — smallest, datelines */
 .t-micro {
   font-family: var(--ff-mono);
   font-size: var(--fs-micro);
@@ -214,7 +185,6 @@ body {
   color: var(--fg-3);
 }
 
-/* Pull — display, for section intros and callouts */
 .t-pull {
   font-family: var(--ff-display);
   font-size: var(--fs-h2);
@@ -224,23 +194,15 @@ body {
   letter-spacing: var(--tr-tight);
 }
 
-/* Code */
 code, .t-code {
   font-family: var(--ff-mono);
   font-size: 0.9em;
   background: var(--bg-2);
   padding: 0.15em 0.5em;
-  
+
   border-radius: var(--r-1);
 }
 
-/* ============================================================
-   COLORFUL MONO — the signature treatment
-   Mono is the UI voice. We don't leave it grey. Every mono block
-   is allowed — encouraged — to carry a canonical hue per token.
-   ============================================================ */
-
-/* Hue utilities — apply to mono runs to tint them */
 .mono-green   { color: var(--mono-1); }
 .mono-purple  { color: var(--mono-2); }
 .mono-mascot  { color: var(--mono-3); }
@@ -250,7 +212,6 @@ code, .t-code {
 .mono-ink     { color: var(--fg); }
 .mono-dim     { color: var(--fg-3); }
 
-/* Highlight block — a mono run on a tinted bg with dark text */
 .hl-green   { background: var(--green);   color: var(--green-fg); padding: 0.08em 0.4em; border-radius: var(--r-1); }
 .hl-purple  { background: var(--purple);  color: var(--purple-fg); padding: 0.08em 0.4em; border-radius: var(--r-1); }
 .hl-mascot  { background: var(--mascot);  color: var(--mascot-fg); padding: 0.08em 0.4em; border-radius: var(--r-1); }
@@ -258,16 +219,14 @@ code, .t-code {
 .hl-flame   { background: var(--flame);   color: var(--paper); padding: 0.08em 0.4em; border-radius: var(--r-1); }
 .hl-sky     { background: var(--sky);     color: var(--paper); padding: 0.08em 0.4em; border-radius: var(--r-1); }
 
-/* Role-colored mono spans — semantic, self-documenting */
-.m-k     { color: var(--mono-2); font-weight: 500; }  /* keyword */
-.m-s     { color: var(--mono-4); }                    /* string */
-.m-n     { color: var(--mono-1); }                    /* number / live */
-.m-c     { color: var(--fg-3); font-style: italic; }  /* comment */
-.m-tag   { color: var(--mono-3); }                    /* tag / mention */
-.m-op    { color: var(--mono-5); }                    /* operator / punct */
+.m-k     { color: var(--mono-2); font-weight: 500; }
+.m-s     { color: var(--mono-4); }
+.m-n     { color: var(--mono-1); }
+.m-c     { color: var(--fg-3); font-style: italic; }
+.m-tag   { color: var(--mono-3); }
+.m-op    { color: var(--mono-5); }
 .m-ref   { color: var(--mono-6); text-decoration: underline; text-underline-offset: 3px; }
 
-/* Links in prose */
 .prose a, a.t-link {
   color: var(--link);
   text-decoration: underline;
@@ -280,10 +239,6 @@ code, .t-code {
   text-decoration: none;
 }
 
-/* ============================================================
-   Primitives — rules, stamps, buttons
-   ============================================================ */
-
 .rule       {   margin: 0; }
 .rule-double{    height: var(--bw-rule); margin: 0; }
 .rule-dotted{   margin: 0; }
@@ -291,11 +246,10 @@ code, .t-code {
 .rule-purple{   margin: 0; }
 .rule-mascot{   margin: 0; }
 
-/* The 247420 stamp */
 .stamp {
   display: inline-block;
   padding: var(--space-1) var(--space-3);
-  
+
   border-radius: var(--r-pill);
   color: var(--fg);
   background: transparent;
@@ -313,10 +267,8 @@ code, .t-code {
 .stamp.sun     { background: var(--sun);    color: var(--ink);        }
 .stamp.flame   { background: var(--flame);  color: var(--paper);      }
 
-/* Legacy alias — .stamp.acid now means green */
 .stamp.acid    { background: var(--green);  color: var(--green-fg);   }
 
-/* The "stamp button" */
 .btn-stamp {
   display: inline-flex;
   align-items: center;
@@ -324,7 +276,7 @@ code, .t-code {
   padding: var(--space-3) var(--space-4);
   background: var(--fg);
   color: var(--bg);
-  
+
   border-radius: var(--r-2);
   box-shadow: 4px 4px 0 var(--fg);
   font-family: var(--ff-mono);
@@ -344,9 +296,8 @@ code, .t-code {
 .btn-stamp.mascot { background: var(--mascot); color: var(--mascot-fg);  box-shadow: 4px 4px 0 var(--ink); }
 .btn-stamp.sun    { background: var(--sun);    color: var(--ink);        box-shadow: 4px 4px 0 var(--ink); }
 .btn-stamp.flame  { background: var(--flame);  color: var(--paper);      box-shadow: 4px 4px 0 var(--ink); }
-.btn-stamp.acid   { background: var(--green);  color: var(--green-fg);   box-shadow: 4px 4px 0 var(--ink); } /* legacy */
+.btn-stamp.acid   { background: var(--green);  color: var(--green-fg);   box-shadow: 4px 4px 0 var(--ink); }
 
-/* Plain button — default */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -354,7 +305,7 @@ code, .t-code {
   padding: var(--space-3) var(--space-4);
   background: transparent;
   color: var(--fg);
-  
+
   border-radius: var(--r-2);
   font-family: var(--ff-mono);
   font-weight: 500;
@@ -368,10 +319,9 @@ code, .t-code {
 .btn:hover  { background: var(--fg); color: var(--bg); }
 .btn:active { background: var(--green); color: var(--green-fg);  }
 
-/* Ghost/link button */
 .btn-ghost {
   background: transparent;
-  
+
   color: var(--fg);
   font-family: var(--ff-mono);
   font-size: var(--fs-sm);
@@ -384,28 +334,23 @@ code, .t-code {
 }
 .btn-ghost:hover { color: var(--green-fg); background: var(--green); }
 
-/* Input — softened: full border, rounded, 2px default */
 .input {
   width: 100%;
   background: var(--bg);
-  
+
   border-radius: var(--r-2);
   padding: var(--space-3) var(--space-3);
   font-family: var(--ff-mono);
   font-size: var(--fs-body);
   color: var(--fg);
-  
+
   transition: border-color var(--dur-snap) var(--ease), box-shadow var(--dur-snap) var(--ease);
 }
 .input:focus {
-  
+
   box-shadow: 0 0 0 4px color-mix(in oklab, var(--green) 25%, transparent);
 }
 .input::placeholder { color: var(--fg-3); }
-
-/* ============================================================
-   Layout scaffolds
-   ============================================================ */
 
 .page { min-height: 100vh; padding: var(--space-5); }
 
@@ -415,7 +360,7 @@ code, .t-code {
   align-items: baseline;
   gap: var(--space-4);
   padding-bottom: var(--space-2);
-  
+
   font-family: var(--ff-mono);
   font-size: var(--fs-xs);
   text-transform: uppercase;
@@ -424,13 +369,12 @@ code, .t-code {
 .dateline > * { white-space: nowrap; }
 .dateline .spread { flex: 1;  align-self: center; }
 
-/* Index-card row — soft card with breathing room */
 .row {
   display: grid;
   grid-template-columns: 80px 1fr auto;
   gap: var(--space-4);
   padding: var(--space-4);
-  
+
   border-radius: var(--r-3);
   background: var(--bg);
   align-items: baseline;
@@ -445,33 +389,24 @@ code, .t-code {
 .row:hover .row-code { color: var(--sun); }
 .row:hover .row-meta { color: var(--green-fg); }
 
-/* Soft card — the generic container */
 .card {
-  
+
   border-radius: var(--r-3);
   background: var(--bg);
   padding: var(--space-5);
 }
 .card.chunk {  }
 
-/* ============================================================
-   Selection
-   ============================================================ */
 ::selection { background: var(--mascot); color: var(--mascot-fg); }
 
-
-/* ============================================================
-   Panel surface tokens — brand-bible parchment palette
-   Light default. Dark via prefers-color-scheme or [data-theme="dark"].
-   ============================================================ */
 :root {
-  --panel-0:       var(--paper);  /* #EFE9DD canvas */
+  --panel-0:       var(--paper);
   --panel-1:       #f6f1e7;
   --panel-2:       #ece5d8;
   --panel-3:       #ddd4c3;
   --panel-hover:   #e3dccb;
   --panel-select:  #c9e8c5;
-  --panel-text:    var(--ink);    /* #0B0B09 */
+  --panel-text:    var(--ink);
   --panel-text-2:  #4a473f;
   --panel-text-3:  #6d675b;
   --panel-accent:    var(--green);
@@ -533,7 +468,6 @@ code, .t-code {
   --panel-shadow:  none;
 }
 
-/* Foreground / background aliases derived from panel tokens */
 :root {
   --fg:   var(--panel-text);
   --fg-3: var(--panel-text-3);
@@ -551,9 +485,6 @@ code, .t-code {
 [data-theme="dark"]  { --fg: var(--panel-text); --fg-3: var(--panel-text-3); --bg: var(--panel-0); --bg-2: var(--panel-2); }
 [data-theme="light"] { --fg: var(--panel-text); --fg-3: var(--panel-text-3); --bg: var(--panel-0); --bg-2: var(--panel-2); }
 
-/* Contrast safety on any acid/lime/mint surface — text must be ink,
-   never light grey / white. Covers the --acid token and any hue that
-   pairs a near-white fg against a near-white accent. */
 .on-acid, .on-lime, [data-accent="acid"], [data-accent="lime"] {
   background: var(--acid);
   color: var(--ink);
@@ -562,10 +493,6 @@ code, .t-code {
   color: inherit;
 }
 
-/* Hard guard: accent backgrounds must use --panel-accent-fg, not literal white.
-   In dark mode --panel-accent flips to a LIGHT mint; literal #fff text on top
-   becomes invisible. Catch any drift via attribute-style selectors and the
-   common chip/status/btn-primary/topbar-active patterns. */
 .chip.accent,
 .app-status,
 .app-status a,
@@ -576,7 +503,6 @@ code, .t-code {
 }
 [data-on-accent] { background: var(--panel-accent); }
 
-/* Universal reset — no borders, no outlines except :focus-visible */
 *, *::before, *::after { box-sizing: border-box; border: 0 !important; outline: 0 !important; }
 :focus-visible { outline: 2px solid var(--panel-accent) !important; outline-offset: 2px; }
 html, body { margin: 0; padding: 0; }

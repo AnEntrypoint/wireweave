@@ -40,7 +40,7 @@ every submodule is an `EventTarget`. subscribe with `addEventListener('event', .
 ## direct messages (encrypted)
 
 ```js
-const dm = ww.ensureDM();              // lazy: needs nostr-tools built with nip44
+const dm = ww.ensureDM();
 dm.subscribe(({ peer, plaintext }) => console.log(peer, plaintext));
 await dm.send(peerPubkey, 'hello');
 ```
@@ -78,9 +78,9 @@ session.addEventListener('peer-open',  (e) => console.log('peer up', e.detail.pe
 session.addEventListener('data',       (e) => handleFrame(e.detail.peerPubkey, e.detail.data));
 session.addEventListener('peer-close', (e) => console.log('peer down', e.detail.peerPubkey));
 
-await session.connect('lobby-7'); // any room name; URL-hash works fine
-session.broadcast(new Uint8Array(payload));     // → all open peers
-session.send(somePeerPubkey, new Uint8Array(p)); // → one peer
+await session.connect('lobby-7');
+session.broadcast(new Uint8Array(payload));
+session.send(somePeerPubkey, new Uint8Array(p));
 ```
 
 Options: `dataChannelOptions` (default `{ ordered: true }`), `iceServers` (override the default STUN/TURN list for this session only), and `createPeerConnection` (see below). Construct multiple `DataSession`s in the same page to use distinct rooms / channel configurations.
@@ -98,16 +98,9 @@ import { RTCPeerConnection as PolyfillRTCPeerConnection } from 'node-datachannel
 const session = createDataSession({
   fsm, xstate, relayPool: pool, auth, namespace: 'mygame',
   createPeerConnection: (config) => {
-    // node-datachannel's native RtcConfig is richer than the W3C shape:
-    // enableIceUdpMux shares one UDP port across all peer connections
-    // (fewer ports to traverse through a firewall); portRangeBegin/End
-    // pins ICE to a fixed range you can port-forward; proxyServer routes
-    // ICE through a SOCKS5/HTTP proxy on networks that block direct UDP/TCP.
     const nativePc = new ndc.PeerConnection('peer', {
       iceServers: config.iceServers.map(s => s.urls),
       enableIceUdpMux: true,
-      // portRangeBegin: 50000, portRangeEnd: 51000,
-      // proxyServer: { type: 'Socks5', ip: '127.0.0.1', port: 1080 }
     });
     return new PolyfillRTCPeerConnection({ peerConnection: nativePc });
   }
@@ -141,7 +134,7 @@ const voice = ww.ensureVoice({
     document.body.appendChild(a);
     peer.audioEl = a;
   },
-  onVideoTrack: ({ peerPubkey, stream }) => { /* attach to <video> */ }
+  onVideoTrack: ({ peerPubkey, stream }) => { attachVideoTrack(peerPubkey, stream); }
 });
 await voice.connect('general-voice', { displayName: 'you' });
 voice.toggleMic();
@@ -159,13 +152,13 @@ Voice carries every empirically-discovered reliability pattern: perfect negotiat
 const voice = ww.ensureVoice({
   serverId: 'abc:xyz',
   displayName: 'you',
-  pttMode: true,              // push-to-talk (default) vs. open-mic/VAD mode
-  micSensitivity: 0.045,      // RMS threshold the speaker-activity detector uses
-  noiseSuppression: true,     // getUserMedia audio constraints — real MediaTrackConstraints
+  pttMode: true,
+  micSensitivity: 0.045,
+  noiseSuppression: true,
   echoCancellation: true,
   autoGainControl: true,
-  audioQuality: 'high',       // Opus bitrate tier: 'low' (16kbps) | 'medium' (32kbps) | 'high' (48kbps) | 'max' (64kbps)
-  dtx: true                   // discontinuous transmission (silence suppression), SDP fmtp usedtx=1
+  audioQuality: 'high',
+  dtx: true
 });
 ```
 
@@ -186,6 +179,90 @@ import * as NostrTools from 'nostr-tools';
 const pool = new RelayPool({ relays: ['wss://relay.damus.io'], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket });
 const auth = new NostrAuth({ nostrTools: NostrTools });
 ```
+
+## Public page feedback and developer tools
+
+The Wireweave landing page prepares GitHub messages with page context and custom JSON metadata. Visitors review and post through GitHub; developers and existing tools use the repository issue inbox. For automation, use `gh issue list --repo AnEntrypoint/wireweave --json number,title,body,state,url`, then `gh issue view NUMBER --repo AnEntrypoint/wireweave --comments`. Authorized tools can follow up with the normal GitHub issue APIs.
+
+
+For SDK consumers, feedback is a public, relay-backed inbox per server, with page-scoped threads. Visitors can leave messages without creating an account. Their browser retains a local signing identity so they can follow up. Developers can reply, assign threads and set `open`, `in_progress`, `resolved` or `closed`.
+
+All messages, names, contact details and metadata are public. Include only information intended for publication; avoid secrets and personal diagnostics. Metadata is a bounded JSON object, suitable for category, version, reproduction steps, attachment URLs or an issue reference.
+
+Mount the form on any page:
+
+```js
+import { mountFeedbackForm } from 'wireweave/feedback-form';
+
+const feedback = ww.ensureFeedback({ serverId });
+const form = mountFeedbackForm({
+  container: document.querySelector('#feedback'),
+  feedback,
+  pageId: 'getting-started',
+  storage: localStorage,
+  metadata: { category: 'documentation', version: '1.0' }
+});
+await form.ready;
+```
+
+Use the same `serverId` and relay list in the page and developer tools. Its leading public key identifies the inbox owner, as with existing Wireweave servers. The owner, admins and moderators can triage; only the visitor who opened a thread and authorized developers can reply. The form preserves its thread reference across reloads when storage is supplied. Retain the visitor signing key to keep the ability to reply; losing browser storage loses that identity.
+
+```js
+import { createFeedbackTools } from 'wireweave/feedback-tools';
+
+const tools = createFeedbackTools({ feedback });
+console.log(tools.definitions);
+const inbox = await tools.call('feedback_list', { status: 'open', limit: 50 });
+const thread = await tools.call('feedback_get', { threadId: inbox[0].id });
+await tools.call('feedback_reply', {
+  threadId: thread.id,
+  message: 'Thanks. Please share the steps to reproduce.',
+  metadata: { issue: 'https://github.com/your-org/your-app/issues/123' }
+});
+await tools.call('feedback_update', {
+  threadId: thread.id,
+  status: 'in_progress',
+  assignee: developerPubkey
+});
+```
+
+The adapter exports JSON Schema tool definitions and `callTool({ name, arguments })`, returning MCP-shaped text content and `isError` on failure. Register these in your existing tool server. Reads refresh relay history before returning; writes require the actual developer signer. JSON metadata and visitor text remain untrusted data when shown to an agent or rendered in a UI.
+
+For Node tools, import the feedback subpath directly; it does not need xstate or a browser:
+
+```js
+import WebSocket from 'ws';
+import * as nostrTools from 'nostr-tools';
+import { RelayPool } from 'wireweave/relay-pool';
+import { NostrAuth } from 'wireweave/auth';
+import { Roles } from 'wireweave/roles';
+import { createFeedback } from 'wireweave/feedback';
+
+const pool = new RelayPool({ relays, verifyEvent: nostrTools.verifyEvent, WebSocketImpl: WebSocket });
+const auth = new NostrAuth({ nostrTools });
+auth.importKey(process.env.WIREWEAVE_FEEDBACK_KEY);
+const roles = new Roles({ relayPool: pool, auth });
+const feedback = createFeedback({ relayPool: pool, auth, roles, serverId });
+pool.connect();
+try {
+  const inbox = await feedback.fetchOnce();
+  console.log(JSON.stringify(inbox));
+} finally {
+  feedback.unsubscribe();
+  roles.unsubscribe(serverId);
+  pool.disconnect();
+}
+```
+
+For read-only access, omit `auth` and `roles`. `fetchOnce()` waits for feedback and role history from an available relay and rejects on timeout. Set `requireAllRelays: true` to require all queried relays. `historyStatus` reports queried and completed relays and `completeAcrossRelays`; tool envelopes include this scope in `structuredContent.history`. `subscribe({ pageId })` returns a cleanup function and emits `feedback` events for live threads. `list({ pageId, status, assignee, limit })` and `get(threadId)` return snapshots. Writes resolve only after a relay accepts the signed event; a timeout means delivery is unconfirmed, so inspect the inbox before retrying. If publication succeeds but history refresh fails, tools return `FEEDBACK_ACCEPTED_HISTORY_UNAVAILABLE` with `accepted: true`, `eventId` and `threadId`; retain that reference rather than submitting again. Relay retention determines how long history remains available. Each cached history scope retains at most 2,000 events by default (`maxEvents`, configurable up to 10,000 through `createFeedback` or `ensureFeedback`). At most eight server, page or thread scopes are retained. Overflow raises `FEEDBACK_HISTORY_INCOMPLETE` so tools cannot mistake partial history for a complete result. A fresh page or `fetchOnce({ threadId })` read recovers a narrower scope; developer tools load only the selected thread for follow-up. Pass `signal` to cancel a pending history read.
+
+The command-line adapter accepts a JSON tool call on stdin:
+
+```sh
+printf '%s' '{"name":"feedback_list","arguments":{"status":"open"}}' | WIREWEAVE_FEEDBACK_SERVER='OWNER_PUBLIC_KEY:server' wireweave-feedback
+```
+
+Set `WIREWEAVE_FEEDBACK_RELAYS` to a JSON array of relay URLs, and `WIREWEAVE_FEEDBACK_KEY` only for writes. The package includes `ws`; install the `nostr-tools` peer dependency in the consuming Node project. The CLI returns one JSON MCP result and a nonzero exit code for errors.
 
 ## test
 

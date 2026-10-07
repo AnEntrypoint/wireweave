@@ -17,11 +17,6 @@ const countLeadingZeroBits = (hexId) => {
   return bits;
 };
 
-// NIP-13 proof-of-work: mines a nonce tag so the final event id has at
-// least `difficulty` leading zero bits, entirely client-side (no relay
-// changes required) -- a cheap per-message spam-resistance signal a server
-// can opt into. Bounded by maxIterations so a high difficulty on a slow
-// device degrades to "best effort within budget" rather than hanging.
 const minePow = (getEventHash, template, difficulty, maxIterations = 2_000_000) => {
   const tags = (template.tags || []).filter((t) => t[0] !== 'nonce');
   for (let nonce = 0; nonce < maxIterations; nonce++) {
@@ -29,7 +24,7 @@ const minePow = (getEventHash, template, difficulty, maxIterations = 2_000_000) 
     const id = getEventHash(candidate);
     if (countLeadingZeroBits(id) >= difficulty) return candidate;
   }
-  return template; // budget exhausted -- send unmined rather than hang forever
+  return template;
 };
 
 export class Chat extends EventTarget {
@@ -38,15 +33,9 @@ export class Chat extends EventTarget {
     if (!relayPool || !auth) throw new Error('Chat: relayPool + auth required');
     this.pool = relayPool; this.auth = auth;
     this.getChannelContext = getChannelContext; this.isAdmin = isAdmin;
-    // Server-enforced ban/timeout check (defense in depth against a
-    // bypassing client, not just a send-time guard) and the user's own
-    // personal mute list (NIP-51 kind:10000) -- both optional so tests and
-    // callers that don't need moderation can construct Chat without them.
+
     this.bans = bans; this.mutes = mutes;
-    // Optional NIP-13 PoW: getEventHash comes from nostr-tools (needed to
-    // mine before signing), powDifficulty is opt-in per AGENTS.md's
-    // "no fallback for a feature nobody asked to enable" spirit -- 0 (the
-    // default) skips mining entirely with zero added cost.
+
     this.getEventHash = getEventHash; this.powDifficulty = powDifficulty;
     this.activeChannelId = null;
     this.messages = [];
@@ -76,11 +65,7 @@ export class Chat extends EventTarget {
       this._emit('send-blocked', { reason: 'banned-or-timed-out' });
       return;
     }
-    // The caller-supplied `announcement` flag only covers the explicit
-    // sendAnnouncement() path -- a plain send() into a channel whose OWN
-    // type is 'announcement' (the composer's real, ordinary send path) must
-    // be gated the same way, or the admin-only restriction the channel name
-    // implies is never actually enforced for the common case.
+
     const isAnnouncementPost = announcement || channelType === 'announcement';
     if (isAnnouncementPost && !this.isAdmin(serverId)) {
       this._emit('send-blocked', { reason: 'announcement-admin-only' });
@@ -130,19 +115,14 @@ export class Chat extends EventTarget {
     this.pool.subscribe('chat-live-' + channelId,
       [{ kinds: [42], '#e': [chanHex], since: Math.floor(Date.now() / 1000) }],
       (ev) => { if (!this._isBlocked(serverId, ev.pubkey) && !this.deletedIds.has(ev.id)) this._addMessage(this._eventToMsg(ev)); });
-    // A NIP-09 kind:5 deletion only tags the deleted event's own id (no
-    // channel reference), so it can't be relay-side filtered by channel --
-    // the relevance check happens here, client-side, against the locally
-    // cached message list. Applies to both already-loaded and not-yet-seen
-    // messages (deletedIds persists across the whole channel session), so a
-    // deletion that arrives before its target message still takes effect.
+
     this.pool.subscribe('chat-deletions-' + channelId,
       [{ kinds: [5], since: Math.floor(Date.now() / 1000) - DELETION_LOOKBACK_S, limit: DELETION_LIMIT }],
       (ev) => {
         const targetId = (ev.tags || []).find((t) => t[0] === 'e')?.[1];
         if (!targetId) return;
         const target = this.messages.find((m) => m.id === targetId);
-        if (target && target.userId !== ev.pubkey && !this.isAdmin(serverId)) return; // only author or admin can delete
+        if (target && target.userId !== ev.pubkey && !this.isAdmin(serverId)) return;
         this.deletedIds.add(targetId);
         if (target) { this.messages = this.messages.filter((m) => m.id !== targetId); this._emit('messages', { list: this.messages }); }
       });

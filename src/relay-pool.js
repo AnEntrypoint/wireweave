@@ -1,11 +1,6 @@
 import { safeSetItem } from './safe-storage.js';
 import * as debug from './debug.js';
 
-// Ordered fastest-first by measured connect latency; dead relays removed so
-// signaling reaches a live relay immediately instead of racing dead hosts.
-// (relay.nostr.band / nostr.wine / relay.current.fyi / relay.0xchat.com were
-// unreachable — DNS-dead or refusing connections — and only added connect
-// latency and console noise. Re-audit periodically.)
 const DEFAULT_RELAYS = [
   'wss://relay.primal.net',
   'wss://nos.lol',
@@ -15,9 +10,6 @@ const DEFAULT_RELAYS = [
   'wss://relay.damus.io'
 ];
 
-// Backup pool candidates auto-rotation can promote in when a connected relay's
-// health score falls below a healthy alternative's — never DEFAULT_RELAYS
-// members already in play, so rotation always trades toward strictly-better.
 const FALLBACK_RELAYS = [
   'wss://relay.nostr.band',
   'wss://nostr.wine',
@@ -31,19 +23,12 @@ const PENDING_TTL_MS = 120000;
 const CONNECT_TIMEOUT_MS = 10000;
 const jitter = (ms) => Math.round(ms * (0.75 + Math.random() * 0.5));
 
-// EWMA smoothing for latency/EOSE-speed samples — recent samples dominate but
-// a single slow sample doesn't crater a relay's score outright.
 const EWMA_ALPHA = 0.3;
 const ewma = (prev, sample) => prev === null ? sample : prev + EWMA_ALPHA * (sample - prev);
 
 const HEALTH_STORAGE_KEY = 'ww_relay_health';
 const HEALTH_SAVE_DEBOUNCE_MS = 2000;
 
-// health.rank: 0..100, higher is better. Weighted blend of connect latency,
-// EOSE response speed, and uptime ratio (successful sustained connections vs
-// total attempts). Missing samples (relay never connected / no EOSE seen yet)
-// score neutral (50) for that component rather than zero, so a fresh relay
-// isn't unfairly punished before it has a chance to report real numbers.
 const scoreLatency = (ms) => ms === null ? 50 : Math.max(0, 100 - Math.min(ms, 3000) / 30);
 const scoreEose = (ms) => ms === null ? 50 : Math.max(0, 100 - Math.min(ms, 5000) / 50);
 const scoreUptime = (attempts, successes) => attempts === 0 ? 50 : Math.round((successes / attempts) * 100);
@@ -64,14 +49,6 @@ class RelayHealth {
     this.rank = 50;
   }
 
-  // Recomputes rank on every attempt, not just on a successful signal —
-  // otherwise a relay that NEVER once connects (rank frozen at the ctor's
-  // neutral 50 forever, since recordConnectLatency/recordSustainedConnection/
-  // recordEoseLatency — the only other rank-recomputing call sites — never
-  // fire for it) reads as perpetually "average" no matter how many failed
-  // attempts pile up, defeating both healthReport() ranking and
-  // _maybeRotate's rank-gap rotation trigger for the exact "never connects
-  // at all" relay auto-rotation exists to route around.
   recordConnectAttempt() { this.attempts++; this.rank = computeRank(this); }
 
   recordConnectLatency(ms) {
@@ -126,15 +103,6 @@ const fnv1a = (s) => {
 
 const safeSubId = (subId) => subId.length <= 64 ? subId : subId.slice(0, 55) + '-' + fnv1a(subId);
 
-// Shared publish budget: a real token bucket, refilled continuously at
-// refillPerSec tokens/sec up to burstCap, drained one token per publish()
-// call. This is the SINGLE choke point every module's writes go through
-// (chat, dm, bans, roles, settings, servers, data-channel signaling all
-// call pool.publish()) so one shared bucket per RelayPool instance budgets
-// abuse across all of them at once, rather than each module needing (and
-// forgetting) its own independent limiter — chat.js's own 5-per-10s limiter
-// stays as an app-level UX throttle (rate-limited event + retryAfterMs for
-// a chat input box), this is the lower-level protocol-wide backstop.
 const DEFAULT_BUDGET_BURST = 30;
 const DEFAULT_BUDGET_REFILL_PER_SEC = 3;
 
@@ -154,11 +122,6 @@ class PublishBudget {
     this.lastRefillAt = now;
   }
 
-  // Returns true and consumes a token if available, else false (caller
-  // decides what "budget exceeded" means — RelayPool.publish() below
-  // queues the event as pending rather than dropping it, since a
-  // rate-limited-not-lost event still eventually goes out once the bucket
-  // refills, via the same _drainPending path a disconnected relay uses).
   tryConsume() {
     this._refill();
     if (this.tokens < 1) return false;
@@ -196,20 +159,15 @@ export class RelayPool extends EventTarget {
     for (const url of this.urls) this.health.set(url, new RelayHealth(url));
     this._loadHealth();
     this._saveHealthTimer = null;
-    // publishBudget:false disables the budget entirely (unbounded, the old
-    // behavior) — anything else (including {}) gets a real token bucket.
+
     this.budget = publishBudget === false ? null : new PublishBudget(publishBudget);
     this._budgetDrainTimer = null;
 
-    // Debug-panel integration: window.__wireweave.relayPool (or relayPool2,
-    // relayPool3... for additional instances) exposes healthReport() live.
     this._debugKey = 'relayPool';
     let n = 2;
     while (debug.get(this._debugKey)) this._debugKey = 'relayPool' + n++;
     debug.register(this._debugKey, this);
   }
-
-  // --- Health scoring / persistence -------------------------------------
 
   _getHealth(url) {
     let h = this.health.get(url);
@@ -228,7 +186,7 @@ export class RelayPool extends EventTarget {
         if (!entry?.url) continue;
         this.health.set(entry.url, RelayHealth.fromJSON(entry));
       }
-    } catch { /* corrupt/absent persisted health is non-fatal — scores rebuild live */ }
+    } catch {                                                                          }
   }
 
   _scheduleSaveHealth() {
@@ -247,7 +205,6 @@ export class RelayPool extends EventTarget {
     safeSetItem(this.storage, this, HEALTH_STORAGE_KEY, JSON.stringify(out));
   }
 
-  // Sorted best-first snapshot for a debug panel / inspection.
   healthReport() {
     const out = [];
     for (const [, h] of this.health) out.push(h.toJSON());
@@ -255,16 +212,6 @@ export class RelayPool extends EventTarget {
     return out;
   }
 
-  // Swap the worst currently-active relay for the best-ranked unused
-  // candidate (fallback pool, or a previously-tried relay we disconnected
-  // from) when the gap is large enough to be worth the churn of a new
-  // connection. Never rotates below MIN_ACTIVE_RELAYS active URLs. Called
-  // from every ws.onclose (both the sustained-then-dropped branch AND the
-  // never-connected/failed-fast branch) — a relay that never manages to
-  // connect at all still needs evaluating here, since that IS the
-  // "consistently unhealthy" case rotation exists to route around, and its
-  // rank already reflects the failures via recordConnectAttempt's own
-  // computeRank call once attempts >= 2 (the sample floor enforced below).
   _maybeRotate() {
     if (!this.autoRotate || this._closed) return;
     const MIN_ACTIVE_RELAYS = 2;
@@ -273,7 +220,7 @@ export class RelayPool extends EventTarget {
 
     const active = this.urls
       .map((url) => this._getHealth(url))
-      .filter((h) => h.attempts >= 2); // need a couple of samples before judging
+      .filter((h) => h.attempts >= 2);
     if (active.length === 0) return;
     const worst = active.reduce((a, b) => (a.rank <= b.rank ? a : b));
 
@@ -281,9 +228,7 @@ export class RelayPool extends EventTarget {
     if (candidates.length === 0) return;
     const candidateHealth = candidates.map((u) => this._getHealth(u));
     const best = candidateHealth.reduce((a, b) => (a.rank >= b.rank ? a : b));
-    // Only rotate toward a candidate with real observed history beating the
-    // worst active relay by a wide margin — an untested candidate (rank 50
-    // neutral default) never displaces a relay with a real track record.
+
     if (best.attempts === 0) return;
     if (best.rank - worst.rank < ROTATE_GAP) return;
 
@@ -396,12 +341,7 @@ export class RelayPool extends EventTarget {
         relay.failCount++;
         relay.reconnectDelay = Math.min(relay.reconnectDelay * 2, 30000);
       }
-      // Evaluate rotation on EVERY close, not just a sustained-then-dropped
-      // connection — a relay that never manages to connect at all (the
-      // `else` branch above) is exactly the "consistently unhealthy"
-      // relay auto-rotation exists to route around, and its rank already
-      // reflects that via computeRank's uptime/latency components once
-      // `attempts >= 2` (the sample floor _maybeRotate itself enforces).
+
       this._maybeRotate();
       relay._openedAt = null;
       if (this._closed) return;
@@ -440,7 +380,7 @@ export class RelayPool extends EventTarget {
         this._getHealth(url).recordEoseLatency(Date.now() - sentAt);
         this._scheduleSaveHealth();
       }
-      this.subs.get(subId)?.onEose?.();
+      this.subs.get(subId)?.onEose?.(url);
       this._emit('eose', { subId });
     } else if (type === 'NOTICE') {
       this._emit('notice', { url, message: msg[1] });
@@ -479,14 +419,6 @@ export class RelayPool extends EventTarget {
     this.subs.delete(subId);
   }
 
-  // Budget-gated: over-budget calls are not dropped, they're queued exactly
-  // like a disconnected-relay event (via _queuePending) and flushed by the
-  // normal _drainPending path once either a relay reconnects or, for a
-  // budget-only rejection, the next successful publish()/heal() drains the
-  // backlog opportunistically. This means a caller that publishes faster
-  // than the budget allows sees eventual delivery, not silent loss — the
-  // same "fire-and-forget with delivery confidence via publishAndWait()"
-  // contract the rest of this class already documents.
   publish(event) {
     if (this.budget && !this.budget.tryConsume()) {
       this._emit('rate-limited', { retryAfterMs: this.budget.retryAfterMs() });
@@ -511,22 +443,12 @@ export class RelayPool extends EventTarget {
     return sent;
   }
 
-  // Live budget introspection for a debug panel / caller backoff decision.
   budgetStatus() {
     if (!this.budget) return { enabled: false };
     this.budget._refill();
     return { enabled: true, tokens: this.budget.tokens, burstCap: this.budget.burstCap, refillPerSec: this.budget.refillPerSec, retryAfterMs: this.budget.retryAfterMs() };
   }
 
-  // A budget-rejected publish() queues into `this.pending` exactly like a
-  // disconnected-relay event, but `this.pending` otherwise only drains on
-  // ws.onopen (a relay reconnecting) — if every relay stays connected the
-  // whole time, a budget-queued event needs its OWN retry path once tokens
-  // refill, or it would sit queued until PENDING_TTL_MS expiry and get
-  // silently dropped despite the relay connection being perfectly healthy.
-  // One timer, scheduled only while budget-queued events are outstanding
-  // (never a standing interval), retries a real drain against every
-  // currently-open relay once the bucket should have refilled a token.
   _scheduleBudgetDrain() {
     if (this._budgetDrainTimer || !this.budget || this._closed) return;
     const delay = Math.max(50, this.budget.retryAfterMs());
@@ -537,14 +459,11 @@ export class RelayPool extends EventTarget {
       for (const [url, relay] of this.relays) {
         if (relay.ws?.readyState === 1) { anyOpen = true; this._drainPending(url, relay.ws); }
       }
-      // Still budget-limited or nothing connected yet — keep retrying as
-      // long as there's a real backlog, so it isn't stranded until TTL.
+
       if (this.pending.length > 0 && (anyOpen || this.budget.retryAfterMs() > 0)) this._scheduleBudgetDrain();
     }, delay);
   }
 
-  // Tracks delivery per relay URL, not just "sent to at least one" — a relay
-  // mid-reconnect during a partial outage otherwise never gets the event.
   _queuePending(event, sentTo) {
     if (event?.id && this._pendingIds.has(event.id)) {
       const existing = this.pending.find((p) => p.event?.id === event.id);
@@ -559,8 +478,6 @@ export class RelayPool extends EventTarget {
     }
   }
 
-  // Resolves true once any relay sends OK accepted, false on relay reject,
-  // or false on timeout. Gives callers delivery confidence beyond fire-and-forget.
   publishAndWait(event, { timeoutMs = 8000 } = {}) {
     const sent = this.publish(event);
     if (!event?.id) return Promise.resolve(sent);

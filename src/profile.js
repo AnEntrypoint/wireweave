@@ -1,14 +1,4 @@
-// Portable nostr identity/profiles: kind:0 (NIP-01 "set_metadata") is the
-// real nostr-native replaceable event carrying name/picture/about/nip05 —
-// publishing it here means an identity (bare pubkey today) becomes portable
-// across ANY wireweave-based app (spoint etc), not just the app that first
-// created it, since any relay-connected nostr client already knows how to
-// read kind:0. chat.js already has a read-only per-Chat-instance
-// _fetchProfile/resolveProfile cache for showing names in a chat UI; this
-// module is the write path (publish your own profile) plus a
-// relay-pool-agnostic fetch-by-pubkey a non-Chat caller can use, and real
-// NIP-05 (`name@domain`) identifier verification via the domain's
-// `/.well-known/nostr.json` per the NIP-05 spec.
+
 
 const KIND_METADATA = 0;
 const PROFILE_CACHE_TTL_MS = 300000;
@@ -20,15 +10,10 @@ export class Profile extends EventTarget {
     this.pool = relayPool;
     this.auth = auth;
     this.fetch = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
-    this.cache = new Map(); // pubkey -> { profile, fetchedAt, eventCreatedAt }
+    this.cache = new Map();
     this.subs = new Map();
   }
 
-  // Publishes (or replaces — kind:0 is a NIP-01 replaceable event, the relay
-  // keeps only the newest per-pubkey copy) your own profile metadata.
-  // `fields` is shallow-merged onto whatever's already cached for yourself
-  // so a caller can update just one field (e.g. only `picture`) without
-  // clobbering the rest.
   async publish(fields) {
     if (!this.auth.isLoggedIn()) throw new Error('Profile: not logged in');
     const existing = this.cache.get(this.auth.pubkey)?.profile || {};
@@ -45,10 +30,6 @@ export class Profile extends EventTarget {
     return signed;
   }
 
-  // One-shot fetch (resolves once, EOSE-driven, with a timeout) — for a
-  // caller that just needs "the current profile for this pubkey" without
-  // wanting a standing subscription. Serves from cache if fresh
-  // (PROFILE_CACHE_TTL_MS) unless forceRefresh is set.
   async fetchOnce(pubkey, { timeoutMs = 8000, forceRefresh = false } = {}) {
     const cached = this.cache.get(pubkey);
     if (cached && !forceRefresh && Date.now() - cached.fetchedAt < PROFILE_CACHE_TTL_MS) return cached.profile;
@@ -77,9 +58,6 @@ export class Profile extends EventTarget {
     });
   }
 
-  // Standing subscription — calls onUpdate(profile) every time a newer
-  // kind:0 for this pubkey arrives (profile changed live), same
-  // newest-wins dedupe chat.js's _fetchProfile already uses.
   subscribe(pubkey, onUpdate) {
     if (this.subs.has(pubkey)) return this.subs.get(pubkey);
     const subId = 'profile-sub-' + pubkey.slice(0, 16);
@@ -105,14 +83,6 @@ export class Profile extends EventTarget {
 
   getCached(pubkey) { return this.cache.get(pubkey)?.profile ?? null; }
 
-  // Real NIP-05 verification: fetches https://<domain>/.well-known/nostr.json
-  // and checks that names[localpart] resolves to the expected pubkey — per
-  // spec this is the ONLY trust anchor for a nip05 identifier claimed in a
-  // profile (a profile can put any string in its nip05 field; verifying it
-  // requires this real HTTP round-trip to the claimed domain, it is not
-  // something derivable from the nostr event alone). Returns false (never
-  // throws) on any network/parse/mismatch failure — an unverifiable nip05
-  // is a real, expected outcome, not an error.
   async verifyNip05(identifier, expectedPubkey) {
     if (!this.fetch) return false;
     const match = /^(?:([\w.+-]+)@)?([\w.-]+)$/.exec((identifier || '').trim());

@@ -3,20 +3,13 @@ const hexChannelId = async (channelId, serverId) => {
   return Array.from(new Uint8Array(h)).map((b) => b.toString(16).padStart(2, '0')).join('');
 };
 
-// Forum posts on a channel: kind:11 (NIP-7D-style thread root, tagged to the
-// channel exactly like chat.js's kind:42 messages) + kind:1111 (NIP-22
-// generic comment, uppercase root E/K tags + lowercase parent e/k tags) for
-// replies within a post's own thread. No relay-side aggregation needed --
-// replyCount is derived client-side from however many kind:1111 events
-// tag a given post as root, same discipline chat.js already uses for
-// channel-scoped kind:42 filtering via a hashed channel tag.
 export class Forum extends EventTarget {
   constructor({ relayPool, auth }) {
     super();
     if (!relayPool || !auth) throw new Error('Forum: relayPool + auth required');
     this.pool = relayPool; this.auth = auth;
-    this.posts = new Map(); // channelId -> Map(postId -> post)
-    this.replies = new Map(); // postId -> [{id, author, content, timestamp}]
+    this.posts = new Map();
+    this.replies = new Map();
     this.activeChannelId = null;
     this.activePostId = null;
   }

@@ -21,9 +21,6 @@ import { createMutes } from './src/mutes.js';
 import { createForum } from './src/forum.js';
 import { VoiceSession, createVoiceSession, getIceServers as getVoiceIceServers } from './src/voice.js';
 
-// A mock relay pool: captures published events and lets a test push events back
-// into a named subscription's onEvent. No network — these are deterministic
-// state/authority tests, the multi-relay path is covered by testRelay below.
 function mockPool() {
   const subs = new Map();
   return {
@@ -58,10 +55,6 @@ async function testAuth() {
   assert.ok(signed.sig);
   assert.ok(NostrTools.verifyEvent(signed));
 
-  // nsecEncode() is the key-backup/export path: the ONLY mitigation a
-  // static, no-backend client can offer for permanent identity loss.
-  // Round-trip it through importKey to prove it is the real, re-importable
-  // secret key, not a decoy.
   const nsec = auth.nsecEncode();
   assert.ok(nsec.startsWith('nsec1'), 'exported key is real bech32 nsec');
   const reimported = new NostrAuth({ nostrTools: NostrTools, storage: store });
@@ -75,18 +68,10 @@ async function testAuth() {
   const loaded = new NostrAuth({ nostrTools: NostrTools, storage: store });
   assert.ok(loaded.loadFromStorage());
 
-  // NIP-07 extension-signed sessions never hold a raw privkey client-side --
-  // nsecEncode() must return null rather than throw or fabricate one, since
-  // there is nothing real to export (the extension owns key custody).
   const extAuth = new NostrAuth({ nostrTools: NostrTools, extension: { getPublicKey: async () => 'a'.repeat(64) } });
   await extAuth.loginWithExtension();
   assert.strictEqual(extAuth.nsecEncode(), null, 'no privkey to export under extension auth');
 
-  // Switching to extension auth while a local key from an earlier session
-  // still sits in storage must clear it -- otherwise a later page reload
-  // would silently restore the stale local key via loadFromStorage() and
-  // switch the user's identity back with zero indication, the exact "which
-  // identity am I posting as" ambiguity between the two auth mechanisms.
   const mixedStorage = new Map();
   const mixedStore = { getItem: (k) => mixedStorage.get(k) || null, setItem: (k, v) => mixedStorage.set(k, v), removeItem: (k) => mixedStorage.delete(k) };
   const localAuth = new NostrAuth({ nostrTools: NostrTools, storage: mixedStore });
@@ -154,13 +139,6 @@ async function testDataSession() {
   console.log('  data: shape pass');
 }
 
-// createPeerConnection lets a Node host inject a natively-tuned peer (e.g.
-// node-datachannel with ICE/UDP muxing, a fixed port range, or a proxy)
-// without wireweave depending on any Node WebRTC binding. Verifies: (1) the
-// default path still constructs a real, working session with no factory
-// supplied; (2) a custom factory is actually invoked, receives the hardened
-// ICE config (iceCandidatePoolSize, iceTransportPolicy, the full ICE server
-// list), and its returned object is what the session operates on.
 async function testDataSessionCreatePeerConnection() {
   const xstate = await import('xstate').catch(() => null);
   if (!xstate) { console.log('  data: createPeerConnection skip (xstate not installed)'); return; }
@@ -201,13 +179,11 @@ function testIceServerOverrides() {
   setIceServers(custom);
   assert.deepStrictEqual(getIceServers(), custom);
 
-  // getIceServers returns a copy, not the live array — mutating it must not
-  // affect subsequent reads.
   const copy = getIceServers();
   copy.push({ urls: 'stun:should-not-persist:3478' });
   assert.deepStrictEqual(getIceServers(), custom);
 
-  setIceServers(originalIceServers); // restore for any later test in this run
+  setIceServers(originalIceServers);
   console.log('  data: setIceServers/getIceServers override pass');
 }
 
@@ -219,21 +195,14 @@ async function testDM() {
   const dmA = new DM({ relayPool: pool, auth: a, nostrTools: NostrTools });
   const dmB = new DM({ relayPool: pool, auth: b, nostrTools: NostrTools });
   const wrap = await dmA.send(b.pubkey, 'magicwand-dm');
-  // wire event is a NIP-17 gift-wrap (kind 1059), not the bare kind:14 rumor
+
   assert.strictEqual(wrap.kind, 1059);
   assert.strictEqual(dmB.decrypt(wrap), 'magicwand-dm');
-  // sender self-copy is also published, separately wrapped for A's own key
+
   assert.strictEqual(published.length, 2);
   assert.strictEqual(published[1].kind, 1059);
   assert.strictEqual(dmA.decrypt(published[1]), 'magicwand-dm');
 
-  // NIP-17 privacy property: the outer gift-wrap leaks neither sender nor
-  // recipient identity to a relay-level observer. The wrap's pubkey is a
-  // fresh single-use random key (not A's real pubkey), and the wrap event
-  // itself carries no plaintext content nor the real sender pubkey anywhere
-  // in its cleartext fields — only the addressed 'p' tag (the recipient) is
-  // visible, same as bare nip44 already left visible, but the SENDER is now
-  // hidden (nip44-only kind:14 signed the real event with A's real pubkey).
   assert.notStrictEqual(wrap.pubkey, a.pubkey, 'gift-wrap outer pubkey is not the real sender');
   assert.notStrictEqual(wrap.pubkey, b.pubkey, 'gift-wrap outer pubkey is not the recipient either');
   assert.ok(!JSON.stringify(wrap).includes('magicwand-dm'), 'plaintext never appears in the wrap, even serialized');
@@ -241,8 +210,6 @@ async function testDM() {
   assert.ok(onlyPTag && wrap.tags.length === 1, 'wrap carries only the recipient p tag, nothing else');
   assert.strictEqual(wrap.tags[0][1], b.pubkey);
 
-  // unwrap() exposes the real rumor-level sender identity (only to the holder
-  // of the recipient privkey) alongside the plaintext.
   const rumor = dmB.unwrap(wrap);
   assert.strictEqual(rumor.pubkey, a.pubkey, 'unwrapped rumor reveals the real sender to the addressed recipient');
   assert.strictEqual(rumor.kind, 14);
@@ -250,7 +217,7 @@ async function testDM() {
 }
 
 function testDtag() {
-  // round-trip: every namespace survives dtag -> parseDtag
+
   for (const ns of ['ban', 'timeout', 'kick', 'page', 'channels', 'roles', 'settings']) {
     const s = dtag(ns, 'srv:abc', 'pk123');
     const p = parseDtag(s);
@@ -258,9 +225,9 @@ function testDtag() {
     assert.strictEqual(p.ns, ns);
     assert.strictEqual(p.parts[p.parts.length - 1], 'pk123');
   }
-  // unknown namespace throws (adversarial — make invalid namespaces unrepresentable)
+
   assert.throws(() => dtag('evil', 'x'), /unknown namespace/);
-  // parse rejects foreign / malformed prefixes (no PREFIX/slice drift)
+
   assert.strictEqual(parseDtag('not-zellous:ban:x'), null);
   assert.strictEqual(parseDtag('zellous-evil:x'), null);
   assert.strictEqual(parseDtag(123), null);
@@ -287,9 +254,9 @@ function testRoles() {
   const serverId = owner.pubkey + ':srv1';
   const roles = createRoles({ relayPool: mockPool(), auth: owner });
   assert.ok(roles.isOwner(serverId));
-  assert.ok(roles.isAdmin(serverId));   // owner is admin
+  assert.ok(roles.isAdmin(serverId));
   assert.strictEqual(roles.getRole(serverId, owner.pubkey), 'owner');
-  // a non-owner cannot be owner/admin until granted
+
   const member = newAuth();
   const rolesM = createRoles({ relayPool: mockPool(), auth: member });
   assert.ok(!rolesM.isOwner(serverId));
@@ -299,23 +266,23 @@ function testRoles() {
 }
 
 function testBans() {
-  // exercise the timeout ingestion path that the shadowed-var fix touched
+
   const owner = newAuth();
   const serverId = owner.pubkey + ':srv1';
   const pool = mockPool();
   const bans = createBans({ relayPool: pool, auth: owner });
   bans.subscribe(serverId);
   const subId = 'bans-' + serverId;
-  // ban event from creator
+
   const banned = newAuth().pubkey;
   pool.feed(subId, { pubkey: owner.pubkey, tags: [['d', dtag('ban', serverId, banned)], ['server', serverId]], content: JSON.stringify({ action: 'ban', pubkey: banned }) });
   assert.ok(bans.isBanned(serverId, banned), 'ban ingested');
-  // timeout event (the fixed branch): future expiry => timed out
+
   const ton = newAuth().pubkey;
   const expiry = Math.floor(Date.now() / 1000) + 600;
   pool.feed(subId, { pubkey: owner.pubkey, tags: [['d', dtag('timeout', serverId, ton)], ['server', serverId]], content: JSON.stringify({ action: 'timeout', pubkey: ton, expiry }) });
   assert.ok(bans.isTimedOut(serverId, ton), 'timeout ingested with future expiry');
-  // forged authority: event NOT from creator is ignored
+
   const attacker = newAuth();
   const victim = newAuth().pubkey;
   pool.feed(subId, { pubkey: attacker.pubkey, tags: [['d', dtag('ban', serverId, victim)], ['server', serverId]], content: JSON.stringify({ action: 'ban', pubkey: victim }) });
@@ -328,7 +295,7 @@ function testSettings() {
   const serverId = owner.pubkey + ':srv1';
   const settings = createSettings({ relayPool: mockPool(), auth: owner, roles: createRoles({ relayPool: mockPool(), auth: owner }) });
   assert.strictEqual(settings.getBitrate(serverId), 24000, 'default bitrate');
-  // empty allowlist => allow-all (documented honest default)
+
   assert.ok(settings.isOriginAllowed(serverId, 'https://anything.example'));
   console.log('  settings: pass');
 }
@@ -339,7 +306,7 @@ function testChannels() {
   const channels = createChannels({ relayPool: mockPool(), auth: owner });
   let ready = false;
   channels.load(serverId, () => { ready = true; });
-  // no event fed; trigger EOSE -> defaults seeded
+
   channels.pool.eose('channels-' + serverId);
   assert.ok(ready, 'onReady fired');
   assert.ok(channels.channels.length > 0, 'default channels seeded');
@@ -353,7 +320,7 @@ function testServers() {
   const servers = createServers({ relayPool: mockPool(), auth, storage });
   assert.deepStrictEqual(servers.servers, []);
   servers._persist();
-  // storage-format contract: persisted under zn_servers, reloads identically
+
   servers.servers = [{ id: auth.pubkey + ':a', name: 'A', iconColor: '#fff' }];
   servers._persist();
   const servers2 = createServers({ relayPool: mockPool(), auth, storage });
@@ -399,7 +366,7 @@ async function testCompose() {
   const xstate = await import('xstate').catch(() => null);
   if (!xstate) { console.log('  compose: skip (xstate not installed)'); return; }
   const ww = createWireweave({ nostrTools: NostrTools, xstate, storage: memStore(), relays: [], WebSocketImpl: WebSocket });
-  // DM must be reachable from the composed SDK (was previously unwired)
+
   assert.strictEqual(typeof ww.ensureDM, 'function', 'ensureDM exposed');
   assert.ok('dm' in ww, 'dm getter exposed');
   ww.auth.generateKey();
@@ -422,19 +389,19 @@ async function testChat() {
   assert.strictEqual(pool.published[0].kind, 42);
   assert.strictEqual(chat.messages.length, 1);
   const sentId = chat.messages[0].id;
-  // unknown id is no-op (no publish)
+
   await chat.deleteMessage('nonexistent');
   assert.strictEqual(pool.published.length, 1, 'no-op on unknown id');
-  // author can delete own message
+
   await chat.deleteMessage(sentId);
   assert.strictEqual(pool.published.length, 2, 'author delete published kind:5');
   assert.ok(pool.published[1].kind === 5);
-  // non-author non-admin throws
+
   const other = newAuth();
   const otherChat = createChat({ relayPool: pool, auth: other, getChannelContext: () => ({ channelId, serverId }), isAdmin: () => false });
   otherChat.messages = [{ id: 'x', userId: auth.pubkey, content: 'y', timestamp: 0, tags: [] }];
   await assert.rejects(() => otherChat.deleteMessage('x'), /not author or admin/);
-  // admin can delete
+
   const adminChat = createChat({ relayPool: pool, auth: other, getChannelContext: () => ({ channelId, serverId }), isAdmin: () => true });
   adminChat.messages = [{ id: 'z', userId: auth.pubkey, content: 'y', timestamp: 0, tags: [] }];
   await adminChat.deleteMessage('z');
@@ -442,11 +409,6 @@ async function testChat() {
   console.log('  chat: pass');
 }
 
-// Deletion must survive loadHistory() being called again (a page reload) --
-// a NIP-09 kind:5 event only tags the deleted event's own id, never the
-// channel, so the check happens client-side against the locally-seen
-// message list, and deletedIds must persist across the whole channel
-// session so a relay replaying the original kind:42 event doesn't resurrect it.
 async function testChatDeletionPersistsAcrossReload() {
   const author = newAuth();
   const admin = newAuth();
@@ -465,8 +427,6 @@ async function testChatDeletionPersistsAcrossReload() {
   assert.strictEqual(chat.messages.length, 0, 'deleted locally');
   assert.ok(pool.published.some((e) => e.kind === 5 && e.tags?.[0]?.[1] === 'm1'));
 
-  // simulate a full page reload: fresh Chat instance, fresh loadHistory(),
-  // relay replays BOTH the original kind:42 message AND the kind:5 deletion
   const reloadedChat = createChat({ relayPool: pool, auth: author, getChannelContext: () => ({ channelId, serverId }), isAdmin: () => false });
   await reloadedChat.loadHistory(channelId);
   const subId2 = 'chat-' + channelId;
@@ -476,8 +436,6 @@ async function testChatDeletionPersistsAcrossReload() {
   pool.eose(subId2);
   assert.strictEqual(reloadedChat.messages.length, 0, 'deleted message does not reappear after reload, even when the relay replays its original kind:42 event');
 
-  // a non-author, non-admin deletion claim is ignored (only removes for the
-  // author/admin case per the existing deleteMessage() authorization)
   const otherChat = createChat({ relayPool: pool, auth: newAuth(), getChannelContext: () => ({ channelId, serverId }), isAdmin: () => false });
   await otherChat.loadHistory(channelId);
   const subId3 = 'chat-' + channelId;
@@ -490,11 +448,6 @@ async function testChatDeletionPersistsAcrossReload() {
   console.log('  chat deletion persists across reload: pass');
 }
 
-// A plain send() into a channel whose OWN type is 'announcement' must be
-// admin-gated the same way the explicit sendAnnouncement()/{announcement:true}
-// path already was -- the real UI composer never sets that flag, so without
-// checking channelType the admin-only restriction implied by the channel
-// name was never actually enforced for the common case.
 async function testChatAnnouncementChannelTypeGate() {
   const owner = newAuth();
   const member = newAuth();
@@ -522,7 +475,6 @@ async function testChatAnnouncementChannelTypeGate() {
   assert.strictEqual(pool.published.length, 1, 'admin can post in an announcement-type channel with a plain send()');
   assert.ok(pool.published[0].tags.some((t) => t[0] === 't' && t[1] === 'announcement'), 'the announcement tag is still applied from channelType alone');
 
-  // a normal text-type channel is unaffected
   const textChat = createChat({
     relayPool: pool, auth: member,
     getChannelContext: () => ({ channelId: 'general', serverId, channelType: 'text' }),
@@ -533,9 +485,6 @@ async function testChatAnnouncementChannelTypeGate() {
   console.log('  chat announcement channel-type gate: pass');
 }
 
-// Chat enforcement: a banned/timed-out sender is rejected at send() (defense
-// in depth beyond the UI-level guard), and both server bans and a viewer's
-// own personal mute list filter incoming history/live messages locally.
 async function testChatBansAndMutesEnforcement() {
   const owner = newAuth();
   const bannedUser = newAuth();
@@ -549,7 +498,6 @@ async function testChatBansAndMutesEnforcement() {
   const bans = createBans({ relayPool: pool, auth: owner, roles });
   bans.store.set(serverId, { banned: [bannedUser.pubkey], timeouts: {}, kicked: [], muted: {} });
 
-  // send() rejects when the CURRENT user is banned
   const bannedChat = createChat({ relayPool: pool, auth: bannedUser, getChannelContext: () => ({ channelId, serverId }), bans });
   let blockedEmitted = false;
   bannedChat.addEventListener('send-blocked', () => { blockedEmitted = true; });
@@ -558,14 +506,13 @@ async function testChatBansAndMutesEnforcement() {
   assert.strictEqual(pool.published.length, beforePublishCount, 'banned user cannot publish a chat message');
   assert.ok(blockedEmitted, 'send-blocked event fires for a banned sender');
 
-  // a normal user's history/live view filters OUT messages from a banned author
   const viewerMutes = createMutes({ relayPool: pool, auth: normalUser });
   viewerMutes.muted.add(mutedUser.pubkey);
-  viewerMutes._loaded = true; // skip the relay-load round trip for this synchronous test
+  viewerMutes._loaded = true;
   const viewerChat = createChat({ relayPool: pool, auth: normalUser, getChannelContext: () => ({ channelId, serverId }), bans, mutes: viewerMutes });
   await viewerChat.loadHistory(channelId);
   const subId = 'chat-' + channelId;
-  // feed three authors: banned (server-level), muted (personal), normal
+
   pool.feed(subId, { id: 'm1', pubkey: bannedUser.pubkey, created_at: 100, tags: [['e', 'irrelevant', '', 'root']], content: 'from banned' });
   pool.feed(subId, { id: 'm2', pubkey: mutedUser.pubkey, created_at: 101, tags: [['e', 'irrelevant', '', 'root']], content: 'from muted' });
   pool.feed(subId, { id: 'm3', pubkey: normalUser.pubkey, created_at: 102, tags: [['e', 'irrelevant', '', 'root']], content: 'from normal' });
@@ -573,7 +520,6 @@ async function testChatBansAndMutesEnforcement() {
   assert.strictEqual(viewerChat.messages.length, 1, 'only the normal-user message survives filtering');
   assert.strictEqual(viewerChat.messages[0].content, 'from normal');
 
-  // live subscription applies the same filter
   const liveSubId = 'chat-live-' + channelId;
   pool.feed(liveSubId, { id: 'm4', pubkey: bannedUser.pubkey, created_at: 200, tags: [['e', 'irrelevant', '', 'root']], content: 'live from banned' });
   pool.feed(liveSubId, { id: 'm5', pubkey: normalUser.pubkey, created_at: 201, tags: [['e', 'irrelevant', '', 'root']], content: 'live from normal' });
@@ -582,11 +528,6 @@ async function testChatBansAndMutesEnforcement() {
   console.log('  chat bans+mutes enforcement: pass');
 }
 
-// NIP-13 proof-of-work: opt-in per-message mining (powDifficulty > 0) yields
-// a real event id with the requested number of leading zero bits, verified
-// against real nostr-tools getEventHash/finalizeEvent -- not a mock hash.
-// Difficulty 0 (the default) must never mine, so existing callers see zero
-// added cost.
 async function testChatPow() {
   const auth = newAuth();
   const pool = mockPool();
@@ -598,7 +539,7 @@ async function testChatPow() {
   assert.strictEqual(noPow.messages[0].tags.some((t) => t[0] === 'nonce'), false, 'difficulty 0 never mines a nonce tag');
 
   const withPow = createChat({ relayPool: pool, auth, getChannelContext: () => ({ channelId, serverId }), getEventHash: NostrTools.getEventHash });
-  withPow.powDifficulty = 8; // small enough to mine near-instantly in a test
+  withPow.powDifficulty = 8;
   await withPow.send('mined message');
   const minedEvent = pool.published[pool.published.length - 1];
   assert.ok(minedEvent.tags.some((t) => t[0] === 'nonce'), 'mined event carries a nonce tag');
@@ -631,7 +572,7 @@ async function testChannelsMutations() {
   assert.strictEqual(ch.channels.find(c => c.id === newCh.id).topic, 'test topic');
   await ch.remove(newCh.id);
   assert.ok(!ch.channels.find(c => c.id === newCh.id), 'channel removed');
-  // non-owner throws
+
   const other = createChannels({ relayPool: pool, auth: newAuth() });
   other.serverId = serverId; other.channels = ch.channels.slice();
   await assert.rejects(() => other.create('x'), /owner only/);
@@ -645,16 +586,16 @@ function testBansFull() {
   const pool = mockPool();
   const bans = createBans({ relayPool: pool, auth: owner });
   bans.subscribe(serverA);
-  bans.subscribe(serverA); // idempotent — should not double-subscribe
+  bans.subscribe(serverA);
   assert.strictEqual(pool.subs.size, 1, 'idempotent subscribe');
   bans.subscribe(serverB);
   assert.strictEqual(pool.subs.size, 2, 'two servers tracked');
-  // kick event on serverA
+
   const kicked = newAuth().pubkey;
   pool.feed('bans-' + serverA, { pubkey: owner.pubkey, tags: [['d', dtag('kick', serverA, kicked)], ['server', serverA]], content: '' });
   assert.ok(bans.isKicked(serverA, kicked), 'kicked on serverA');
   assert.ok(!bans.isKicked(serverB, kicked), 'no bleed to serverB');
-  // unsubscribe removes sub
+
   bans.unsubscribe(serverA);
   assert.strictEqual(pool.subs.size, 1, 'serverA sub removed');
   console.log('  bans full: pass');
@@ -667,11 +608,11 @@ function testRolesRelay() {
   const pool = mockPool();
   const roles = createRoles({ relayPool: pool, auth: owner });
   roles.subscribe(serverId);
-  roles.subscribe(serverId); // idempotent
+  roles.subscribe(serverId);
   assert.strictEqual(pool.subs.size, 1, 'idempotent subscribe');
   let fired = false;
   roles.addEventListener('updated', () => { fired = true; });
-  // feed a kind:30078 roles event granting member admin
+
   pool.feed('roles-' + serverId, {
     pubkey: owner.pubkey,
     tags: [['d', dtag('roles', serverId)]],
@@ -694,18 +635,18 @@ async function testSettingsFull() {
   const roles = createRoles({ relayPool: pool, auth: owner });
   const settings = createSettings({ relayPool: pool, auth: owner, roles });
   settings.subscribe(serverId);
-  settings.subscribe(serverId); // idempotent
+  settings.subscribe(serverId);
   assert.strictEqual(pool.subs.size, 1, 'idempotent subscribe');
-  // setBitrate clamps and publishes
+
   const clamped = await settings.setBitrate(serverId, 30000);
   assert.strictEqual(clamped, 24000, 'clamped to nearest valid bitrate');
   assert.ok(pool.published.length > 0, 'publish fired');
   assert.strictEqual(settings.getBitrate(serverId), 24000);
-  // setEmbedAllowlist
+
   await settings.setEmbedAllowlist(serverId, 'example.com, *.test.org, *');
   assert.ok(settings.isOriginAllowed(serverId, 'https://example.com'), 'exact domain');
   assert.ok(settings.isOriginAllowed(serverId, 'https://sub.test.org'), 'wildcard domain');
-  // subscribe feed updates store
+
   let updated = false;
   settings.addEventListener('updated', () => { updated = true; });
   pool.feed('settings-' + serverId, {
@@ -725,7 +666,7 @@ async function testServersLifecycle() {
   const storage = memStore();
   const pool = mockPool();
   const servers = createServers({ relayPool: pool, auth, storage });
-  // create() adds server + calls switchTo
+
   let switched = null;
   servers.addEventListener('switched', (e) => { switched = e.detail.serverId; });
   await servers.create('My Server', '#ff0000');
@@ -734,18 +675,18 @@ async function testServersLifecycle() {
   assert.ok(switched, 'switchTo fired after create');
   const srvId = servers.servers[0].id;
   assert.strictEqual(storage.getItem('zn_lastServer'), srvId, 'lastServer stored');
-  // rename
+
   await servers.rename(srvId, 'Renamed', '#00ff00');
   assert.strictEqual(servers.servers[0].name, 'Renamed');
   assert.ok(pool.published.some(e => e.kind === 34550), 'rename published kind:34550');
-  // join foreign server
+
   const foreignId = newAuth().pubkey + ':foreign';
   await servers.join(foreignId);
   assert.strictEqual(servers.servers.length, 2, 'join added server');
-  // leave removes it
+
   await servers.delete(foreignId);
   assert.strictEqual(servers.servers.length, 1, 'leave removed server');
-  // saveOrder + sorted
+
   const srv2 = newAuth().pubkey + ':s2';
   servers.servers = [servers.servers[0], { id: srv2, name: 'S2', iconColor: '#fff' }];
   servers.saveOrder([srv2, srvId]);
@@ -762,7 +703,7 @@ async function testDMSubscribe() {
   const pool = mockPool();
   const dmA = new DM({ relayPool: pool, auth: a, nostrTools: NostrTools });
   const dmB = new DM({ relayPool: pool, auth: b, nostrTools: NostrTools });
-  // subscribe B, feed signed event from A
+
   let received = null;
   const subId = dmB.subscribe((msg) => { received = msg; });
   const wrap = await dmA.send(b.pubkey, 'hello-sub');
@@ -771,12 +712,12 @@ async function testDMSubscribe() {
   assert.strictEqual(received.plaintext, 'hello-sub');
   assert.strictEqual(received.peer, a.pubkey);
   assert.strictEqual(received.rumor.kind, 14);
-  // unsubscribe then feed: no callback
+
   dmB.unsubscribe();
   received = null;
   pool.feed(subId, wrap);
   assert.strictEqual(received, null, 'no callback after unsubscribe');
-  // bad ciphertext emits error event, not throw
+
   const dmB2 = new DM({ relayPool: pool, auth: b, nostrTools: NostrTools });
   let errFired = false;
   dmB2.addEventListener('error', () => { errFired = true; });
@@ -793,9 +734,9 @@ async function testPagesFull() {
   const { createPages } = await import('./src/pages.js');
   const roles = createRoles({ relayPool: pool, auth: owner });
   const pages = createPages({ relayPool: pool, auth: owner, roles });
-  // subscribe + feed event
+
   pages.subscribe(serverId);
-  pages.subscribe(serverId); // idempotent
+  pages.subscribe(serverId);
   assert.strictEqual(pool.subs.size, 1, 'idempotent subscribe');
   let updated = false;
   pages.addEventListener('updated', () => { updated = true; });
@@ -806,17 +747,17 @@ async function testPagesFull() {
   });
   assert.ok(updated, 'updated event fired');
   assert.strictEqual(pages.getPages(serverId).length, 1, 'page stored');
-  // deletePage via relay event
+
   pool.feed('pages-' + serverId, {
     pubkey: owner.pubkey,
     tags: [['d', dtag('page', serverId) + ':home']],
     content: JSON.stringify({ deleted: true })
   });
   assert.strictEqual(pages.getPages(serverId).length, 0, 'page deleted via event');
-  // non-admin publish throws
+
   const other = createPages({ relayPool: pool, auth: newAuth(), roles: createRoles({ relayPool: pool, auth: newAuth() }) });
   await assert.rejects(() => other.publish(serverId, 'slug', 'Title', '<p>x</p>'), /Admin only/);
-  // unsubscribe
+
   pages.unsubscribe(serverId);
   assert.strictEqual(pool.subs.size, 0, 'unsubscribed');
   console.log('  pages full: pass');
@@ -826,10 +767,10 @@ async function testComposeFull() {
   const xstate = await import('xstate').catch(() => null);
   if (!xstate) { console.log('  compose full: skip (xstate not installed)'); return; }
   const ww = createWireweave({ nostrTools: NostrTools, xstate, storage: memStore(), relays: [], WebSocketImpl: WebSocket });
-  // setCurrentChannel updates getter
+
   ww.setCurrentChannel('test-ch');
   assert.strictEqual(ww.currentChannelId, 'test-ch', 'currentChannelId getter');
-  // ensureData exposed
+
   assert.strictEqual(typeof ww.ensureData, 'function', 'ensureData exposed');
   assert.ok('data' in ww, 'data getter exposed');
   ww.auth.generateKey();
@@ -844,13 +785,12 @@ async function testComposeFull() {
 }
 
 async function testRelayDisconnectConnecting() {
-  // Exercises the ws-close-CONNECTING fix documented in AGENTS.md
+
   const pool = new RelayPool({ relays: RELAYS, verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket });
   pool.connect();
-  // disconnect immediately before any socket reaches OPEN state
+
   pool.disconnect();
-  // If the fix is absent, Node emits an unhandled EventEmitter error that crashes
-  // the process before this assertion can run. Give it 500ms to confirm no crash.
+
   await new Promise(r => setTimeout(r, 500));
   assert.ok(true, 'no crash on immediate disconnect after connect');
   console.log('  relay disconnect-connecting: pass');
@@ -873,9 +813,9 @@ async function testRelayReconnectCancel() {
   const pool = new RelayPool({ relays: ['wss://a'], WebSocketImpl: WS });
   pool.connect();
   WS.created[0].open();
-  WS.created[0].triggerClose();           // schedules a reconnect timer
+  WS.created[0].triggerClose();
   assert.strictEqual(pool._reconnectTimers.size, 1, 'reconnect timer armed after close');
-  pool.disconnect();                       // must cancel it
+  pool.disconnect();
   assert.strictEqual(pool._reconnectTimers.size, 0, 'disconnect cleared timers');
   assert.strictEqual(pool._closed, true, 'closed flag set');
   await new Promise(r => setTimeout(r, 1600));
@@ -886,12 +826,12 @@ async function testRelayReconnectCancel() {
 async function testRelayPendingCapTtl() {
   const WS = fakeWSImpl();
   const pool = new RelayPool({ relays: ['wss://a'], WebSocketImpl: WS });
-  pool.connect();                          // socket stays CONNECTING -> publishes queue
+  pool.connect();
   for (let i = 0; i < 550; i++) pool.publish({ id: 'e' + i });
   assert.strictEqual(pool.pending.length, 500, 'pending capped at 500');
   assert.strictEqual(pool.pending[0].event.id, 'e50', 'oldest entries dropped, newest kept');
   pool.pending.unshift({ event: { id: 'stale' }, ts: Date.now() - 200000 });
-  pool._drainPending();                    // no open relay: re-queues fresh, drops TTL-expired
+  pool._drainPending();
   assert.ok(!pool.pending.some(p => p.event.id === 'stale'), 'TTL-expired pending dropped on drain');
   pool.disconnect();
   console.log('  relay pending cap/TTL: pass');
@@ -900,9 +840,9 @@ async function testRelayPendingCapTtl() {
 async function testRelayPendingDedupe() {
   const WS = fakeWSImpl();
   const pool = new RelayPool({ relays: ['wss://a'], WebSocketImpl: WS });
-  pool.connect();                          // CONNECTING -> publishes queue
+  pool.connect();
   pool.publish({ id: 'dup' });
-  pool.publish({ id: 'dup' });             // same id must not double-queue
+  pool.publish({ id: 'dup' });
   pool.publish({ id: 'other' });
   assert.strictEqual(pool.pending.length, 2, 'pending deduped by event.id');
   assert.strictEqual(pool._pendingIds.size, 2, 'pendingIds tracks unique ids');
@@ -914,7 +854,7 @@ async function testRelayPublishAck() {
   const WS = fakeWSImpl();
   const pool = new RelayPool({ relays: ['wss://a'], WebSocketImpl: WS });
   pool.connect();
-  WS.created[0].open();                     // readyState 1 -> publish sends
+  WS.created[0].open();
   const okP = pool.publishAndWait({ id: 'acc' }, { timeoutMs: 1000 });
   WS.created[0].onmessage({ data: JSON.stringify(['OK', 'acc', true, '']) });
   assert.strictEqual(await okP, true, 'publishAndWait resolves true on accepted OK');
@@ -930,12 +870,6 @@ async function testRelayPublishAck() {
   console.log('  relay publish ack: pass');
 }
 
-// Real in-process relay (src/ephemeral-relay.js) — a genuine ws-based NIP-01
-// relay, not a mock, so this round-trip is deterministic/CI-independent of
-// public relay uptime while still exercising the real signature-verified
-// wire protocol end to end (see testRelay above for the public-relay
-// version this complements, never replaces per AGENTS.md's multi-relay
-// flake-masking policy for the public path).
 async function testEphemeralRelay() {
   const relay = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
   try {
@@ -967,9 +901,6 @@ async function testEphemeralRelay() {
   console.log('  ephemeral relay: round-trip pass');
 }
 
-// Real relay publish-budget enforcement (src/relay-pool.js's PublishBudget)
-// against the real ephemeral relay — burst-then-throttle-then-drain, with
-// actual OK acks from a real relay process, not a synthetic fake.
 async function testRelayPublishBudget() {
   const relay = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
   try {
@@ -990,7 +921,7 @@ async function testRelayPublishBudget() {
     assert.strictEqual(results.filter((r) => r === true).length, 2, 'exactly burstCap publishes succeed immediately');
     assert.strictEqual(results.filter((r) => r === false).length, 2, 'the rest are budget-queued, not lost');
     assert.ok(pool.pending.length > 0, 'over-budget events are queued, not dropped');
-    // wait for the refill+auto-drain timer to flush the backlog for real
+
     await new Promise((r) => setTimeout(r, 1500));
     assert.strictEqual(pool.pending.length, 0, 'budget-queued events eventually drain once tokens refill');
     pool.disconnect();
@@ -1000,11 +931,6 @@ async function testRelayPublishBudget() {
   console.log('  relay publish budget: pass');
 }
 
-// Finds a real local TCP port nothing is listening on, by binding then
-// immediately releasing it — used to build a genuinely-unreachable
-// ws:// URL for the unhealthy-relay tests below (real ECONNREFUSED,
-// not a mock), without hardcoding a port number that could someday
-// collide with something else running on the test machine.
 function freeLocalPort() {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
@@ -1016,10 +942,6 @@ function freeLocalPort() {
   });
 }
 
-// Real relay-health scoring (src/relay-pool.js's RelayHealth/computeRank)
-// against a genuine ephemeral relay — proves real connect latency, real
-// EOSE latency, and a real success/attempt uptime ratio are actually
-// measured and blended into a real 0-100 rank, not just asserted present.
 async function testRelayHealthScoring() {
   const relay = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
   try {
@@ -1031,7 +953,7 @@ async function testRelayHealthScoring() {
       new Promise((res) => { const h = (e) => { if (e.detail.status === 'connected') { pool.removeEventListener('relay-status', h); res(); } }; pool.addEventListener('relay-status', h); }),
       timed(TIMEOUT, 'health-test connect')
     ]);
-    // Force a real EOSE round trip so eoseLatencyMs gets a real sample too.
+
     const marker = 'health-test-' + Math.random().toString(36).slice(2);
     await new Promise((res, rej) => {
       const subId = 'health-' + Math.random().toString(36).slice(2, 10);
@@ -1057,10 +979,6 @@ async function testRelayHealthScoring() {
   console.log('  relay health scoring: pass (real connect+EOSE latency measured)');
 }
 
-// A deliberately-unhealthy relay (a real, currently-unbound local TCP port —
-// genuine ECONNREFUSED on every attempt, not a mock/stub) must score
-// durably lower than a real, healthy ephemeral relay, and healthReport()
-// must return them best-rank-first.
 async function testUnhealthyRelayLowerScore() {
   const relay = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
   const deadPort = await freeLocalPort();
@@ -1068,9 +986,7 @@ async function testUnhealthyRelayLowerScore() {
   try {
     const pool = new RelayPool({ relays: [relay.url, deadUrl], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, publishBudget: false, autoRotate: false });
     pool.connect();
-    // Wait for the healthy relay to connect AND for the dead relay to fail
-    // at least twice (real 'error'/'closed' events, real reconnect-backoff
-    // cycling) so its attempts/successes ratio has genuine adverse signal.
+
     await Promise.race([
       new Promise((res) => { const h = (e) => { if (e.detail.url === relay.url && e.detail.status === 'connected') { pool.removeEventListener('relay-status', h); res(); } }; pool.addEventListener('relay-status', h); }),
       timed(TIMEOUT, 'healthy-side connect')
@@ -1100,24 +1016,13 @@ async function testUnhealthyRelayLowerScore() {
   console.log('  unhealthy relay lower score: pass (real ECONNREFUSED-driven rank divergence)');
 }
 
-// Auto-rotation must actually swap a consistently-unhealthy active relay
-// for a proven-healthier fallback candidate, live, via real connection
-// outcomes — not a simulated health object.
 async function testAutoRotateAwayFromUnhealthy() {
   const good = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
   const spare = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
   const deadPort = await freeLocalPort();
   const deadUrl = 'ws://127.0.0.1:' + deadPort;
   try {
-    // Pre-seed the fallback candidate (`spare`) with real observed history
-    // by connecting to it directly first — _maybeRotate() refuses to
-    // promote a candidate with zero attempts (an untested relay never
-    // displaces one with a track record), so the candidate needs genuine
-    // prior connects before it can win a rotation. Also drives a real EOSE
-    // round trip so both latency components score above neutral (50),
-    // giving `spare` enough of a real margin over the dead relay's rank
-    // (which sits at 35 after 2 failed attempts, see
-    // testUnhealthyRelayLowerScore) to clear _maybeRotate's ROTATE_GAP=20.
+
     const seedPool = new RelayPool({ relays: [spare.url], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, publishBudget: false });
     seedPool.connect();
     await Promise.race([
@@ -1132,10 +1037,6 @@ async function testAutoRotateAwayFromUnhealthy() {
     const seededHealth = seedPool._getHealth(spare.url).toJSON();
     seedPool.disconnect();
 
-    // Real pool: 3 active URLs (above MIN_ACTIVE_RELAYS=2 floor) — one
-    // genuinely healthy (`good`), one genuinely dead, one filler so
-    // rotation is legal. `spare` sits only in fallbackRelays, carrying the
-    // real pre-seeded health record forward via a shared storage object.
     const store = memStore();
     store.setItem('ww_relay_health', JSON.stringify([seededHealth]));
     const pool = new RelayPool({
@@ -1152,9 +1053,6 @@ async function testAutoRotateAwayFromUnhealthy() {
     pool.addEventListener('relay-rotated', (e) => { rotated = e.detail; });
     pool.connect();
 
-    // Drive the pool until the real rotation actually fires (real failed
-    // connect/close cycles against the dead relay evaluate _maybeRotate on
-    // every close per the fix in relay-pool.js's ws.onclose handler).
     await Promise.race([
       new Promise((res) => { pool.addEventListener('relay-rotated', () => res(), { once: true }); }),
       timed(TIMEOUT, 'rotation to occur')
@@ -1174,14 +1072,10 @@ async function testAutoRotateAwayFromUnhealthy() {
   console.log('  auto-rotate away from unhealthy: pass (real relay-rotated event, real URL swap)');
 }
 
-// A neutral (never-connected) fallback candidate must NOT be promoted by
-// rotation even when the active pool has a genuinely unhealthy member —
-// _maybeRotate requires the candidate to have real observed history
-// (attempts > 0) before it can displace anything.
 async function testNoRotateToUntestedCandidate() {
   const deadPort = await freeLocalPort();
   const deadUrl = 'ws://127.0.0.1:' + deadPort;
-  const untestedUrl = 'ws://127.0.0.1:1'; // never dialed by this test
+  const untestedUrl = 'ws://127.0.0.1:1';
   const good = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
   try {
     const pool = new RelayPool({
@@ -1194,8 +1088,7 @@ async function testNoRotateToUntestedCandidate() {
     let rotated = false;
     pool.addEventListener('relay-rotated', () => { rotated = true; });
     pool.connect();
-    // Give the dead relay two real failed cycles — enough for _maybeRotate
-    // to consider rotating, if a valid candidate existed.
+
     await new Promise((res) => {
       let deadCloses = 0;
       const h = (e) => { if (e.detail.url === deadUrl && e.detail.status === 'closed') { deadCloses++; if (deadCloses >= 2) { pool.removeEventListener('relay-status', h); res(); } } };
@@ -1211,9 +1104,6 @@ async function testNoRotateToUntestedCandidate() {
   console.log('  no rotate to untested candidate: pass');
 }
 
-// Health scores must survive a real session reload: a fresh RelayPool
-// instance sharing the same storage object loads a prior instance's
-// persisted RelayHealth records instead of starting neutral.
 async function testHealthPersistsAcrossReload() {
   const relay = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
   try {
@@ -1226,15 +1116,13 @@ async function testHealthPersistsAcrossReload() {
     ]);
     const before = pool1._getHealth(relay.url).toJSON();
     assert.ok(before.connectLatencyMs !== null, 'real latency recorded before "reload"');
-    pool1.disconnect(); // flushes _saveHealthNow synchronously on disconnect()
+    pool1.disconnect();
 
     const persisted = store.getItem('ww_relay_health');
     assert.ok(persisted, 'health was actually written to the storage object');
     const parsed = JSON.parse(persisted);
     assert.ok(Array.isArray(parsed) && parsed.some((e) => e.url === relay.url), 'persisted blob contains the real relay URL');
 
-    // Simulates a fresh page/session load: a brand-new RelayPool instance,
-    // never having connected to anything, sharing only the storage object.
     const pool2 = new RelayPool({ relays: [relay.url], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, storage: store, publishBudget: false });
     const reloaded = pool2._getHealth(relay.url);
     assert.strictEqual(reloaded.attempts, before.attempts, 'attempt count survived reload without a new connection');
@@ -1248,29 +1136,13 @@ async function testHealthPersistsAcrossReload() {
   console.log('  relay health persists across reload: pass (real storage round-trip)');
 }
 
-// debug.js registry: a live consumer (e.g. a debug panel) reads
-// window.__wireweave.<key> / debug.get(<key>) and calls healthReport() —
-// this proves a RelayPool instance actually self-registers and
-// deregisters through the real debug.js module, the exact path a panel
-// would use, not just that the constructor code exists unexercised.
 async function testDebugPanelExposesHealth() {
   const relay = createEphemeralRelay({ WebSocketServer, verifyEvent: NostrTools.verifyEvent });
   try {
-    // Read back each pool's OWN _debugKey rather than assuming 'relayPool'/'relayPool2' --
-    // debug.js's registry is a single module-level Map shared across the whole test.js
-    // process, so a pool leaked (never disconnect()'d) by an EARLIER test in this same run
-    // can leave lower-numbered keys already occupied by the time this test constructs its
-    // own pools (relay-pool.js's constructor always picks the lowest FREE key, so it may
-    // legitimately start at 'relayPool5' or higher). The real invariant this test exists to
-    // prove -- two concurrently-alive instances get distinct, correctly-incrementing keys,
-    // and disconnect() deregisters the right one -- holds regardless of which numbers those
-    // happen to be, so assert against the pool's own reported key instead of a hardcoded one.
+
     const poolA = new RelayPool({ relays: [relay.url], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, publishBudget: false });
     assert.strictEqual(debug.get(poolA._debugKey), poolA, 'pool instance registers under its own reported debug key');
 
-    // A second concurrent instance must not collide — debug.js's registry
-    // is a plain module-level Map (no window-guard), so this is real
-    // multi-instance behavior even under Node's no-`window` test env.
     const poolB = new RelayPool({ relays: [relay.url], verifyEvent: NostrTools.verifyEvent, WebSocketImpl: WebSocket, publishBudget: false });
     assert.notStrictEqual(poolB._debugKey, poolA._debugKey, 'second concurrent instance gets a DISTINCT debug key from the first');
     assert.strictEqual(debug.get(poolB._debugKey), poolB, 'second concurrent instance registers under its own distinct debug key');
@@ -1294,10 +1166,6 @@ async function testDebugPanelExposesHealth() {
   console.log('  debug panel exposes health: pass (real debug.js registry round-trip)');
 }
 
-// MTU-aware fragmentation/reassembly (src/frame.js) via test.js's own real
-// round-trip, complementing scratch-verify-mtu-framing.mjs's standalone
-// deeper sweep (edge cases, stale-GC, bounded cap) with a presence check in
-// the repo's single root witness suite.
 function testFrameFragmentation() {
   const payload = new Uint8Array(120000).map((_, i) => i % 256);
   const frames = fragment(payload, { messageId: 1, mtu: MTU_DEFAULT });
@@ -1311,12 +1179,6 @@ function testFrameFragmentation() {
   console.log('  frame fragmentation: pass');
 }
 
-// Portable nostr identity/profiles (src/profile.js): publish + partial
-// merge-update + fetch-by-pubkey via the real mockPool pattern (state/
-// authority test, same class as testRoles/testBans above), plus a
-// malformed-identifier NIP-05 guard (the real-network jb55.com case is
-// already witnessed live during EXECUTE; this keeps the always-run suite
-// network-independent for that specific assertion).
 async function testProfile() {
   const auth = newAuth();
   const pool = mockPool();
@@ -1346,9 +1208,6 @@ async function testProfile() {
   console.log('  profile: pass');
 }
 
-// Moderation depth (src/bans.js): unban reversal, channel-level mute/unmute,
-// audit log, and out-of-order-delivery safety for the ban/unban timestamp
-// race (a stale replayed ban must never resurrect a newer unban).
 function testBansModerationDepth() {
   const owner = newAuth();
   const serverId = owner.pubkey + ':srv-mod';
@@ -1367,7 +1226,6 @@ function testBansModerationDepth() {
   pool.feed(subId, { pubkey: owner.pubkey, created_at: 200, tags: [['d', unbanD], ['server', serverId]], content: JSON.stringify({ action: 'unban', pubkey: target }) });
   assert.ok(!bans.isBanned(serverId, target), 'unban reverses ban');
 
-  // a stale, older ban replayed AFTER the newer unban must not resurrect it
   pool.feed(subId, { pubkey: owner.pubkey, created_at: 150, tags: [['d', banD], ['server', serverId]], content: JSON.stringify({ action: 'ban', pubkey: target }) });
   assert.ok(!bans.isBanned(serverId, target), 'stale out-of-order ban replay does not resurrect a newer unban');
 
@@ -1383,9 +1241,6 @@ function testBansModerationDepth() {
   console.log('  bans moderation depth: pass');
 }
 
-// A mere admin (not the owner) must never be able to ban/timeout/mute the
-// owner or another admin — mirrors the protection roles.js's setRole()
-// already has, closing a real gap where bans.js had none at all.
 async function testBansCannotTargetOwnerOrAdmin() {
   const owner = newAuth();
   const admin1 = newAuth();
@@ -1401,11 +1256,10 @@ async function testBansCannotTargetOwnerOrAdmin() {
   await assert.rejects(bansAsAdmin1.ban(serverId, owner.pubkey), /owner/i, 'admin cannot ban the owner');
   await assert.rejects(bansAsAdmin1.timeout(serverId, admin2.pubkey, 10), /admin/i, 'admin cannot timeout another admin');
   await assert.rejects(bansAsAdmin1.mute(serverId, 'chan1', admin2.pubkey), /admin/i, 'admin cannot mute another admin');
-  // admin CAN still act against a plain member
+
   await bansAsAdmin1.ban(serverId, member.pubkey);
   assert.strictEqual(pool.published.length, 1, 'banning a regular member is allowed and publishes');
 
-  // the owner, by contrast, can act against an admin
   const ownerRoles = createRoles({ relayPool: pool, auth: owner });
   ownerRoles.store.set(serverId, { admins: [admin1.pubkey, admin2.pubkey], mods: [] });
   const bansAsOwner = createBans({ relayPool: pool, auth: owner, roles: ownerRoles });
@@ -1414,10 +1268,6 @@ async function testBansCannotTargetOwnerOrAdmin() {
   console.log('  bans cannot target owner/admin: pass');
 }
 
-// NIP-51 kind:10000 personal mute list: mute/unmute publish the full list as
-// one replaceable event, and load() restores it from the user's own latest
-// relay-published event (including retrying once auth resolves after a
-// login event, for the boot-time-not-yet-logged-in case).
 async function testMutes() {
   const user = newAuth();
   const target1 = newAuth().pubkey;
@@ -1439,24 +1289,19 @@ async function testMutes() {
   assert.ok(mutes.isMuted(target2));
   assert.deepStrictEqual(pool.published[2].tags, [['p', target2]]);
 
-  // re-muting an already-muted pubkey / unmuting an already-absent one is a
-  // true no-op (no redundant publish)
   const beforeCount = pool.published.length;
   await mutes.mute(target2);
   await mutes.unmute(target1);
   assert.strictEqual(pool.published.length, beforeCount, 'idempotent mute/unmute does not republish');
 
-  // load() restores from the user's own latest kind:10000 event
   const fresh = createMutes({ relayPool: pool, auth: user });
   fresh.load();
   const subId = 'mutes-' + user.pubkey;
   pool.feed(subId, { pubkey: user.pubkey, created_at: 500, tags: [['p', target2]], content: '' });
   assert.ok(fresh.isMuted(target2), 'load() restores the mute list from a relay-published event');
 
-  // boot-before-login case: load() called with no pubkey yet defers until
-  // the 'login' event fires, instead of silently never loading
   const notYetAuth = newAuth();
-  notYetAuth.pubkey = ''; // simulate pre-login state
+  notYetAuth.pubkey = '';
   const deferred = createMutes({ relayPool: pool, auth: notYetAuth });
   deferred.load();
   assert.strictEqual(deferred._loaded, false, 'defers _loaded until auth actually resolves');
@@ -1466,9 +1311,6 @@ async function testMutes() {
   console.log('  mutes: pass');
 }
 
-// Forum: kind:11 thread-root posts scoped to a channel (same hashed-channel-
-// tag discipline as chat.js's kind:42), kind:1111 (NIP-22) replies within a
-// post's own thread, and client-derived replyCount.
 async function testForum() {
   const author = newAuth();
   const replier1 = newAuth();
@@ -1488,16 +1330,14 @@ async function testForum() {
   assert.strictEqual(list[0].title, 'Hello forum');
   assert.strictEqual(list[0].replyCount, 0);
 
-  // empty title rejected
   await assert.rejects(() => forum.createPost(channelId, serverId, '  ', 'x'), /title cannot be empty/);
 
-  // replies from two different users increment replyCount and are ordered oldest-first
   const forumAsReplier1 = createForum({ relayPool: pool, auth: replier1 });
   const r1 = await forumAsReplier1.reply(signed.id, author.pubkey, 'first reply');
   assert.strictEqual(r1.kind, 1111);
   assert.deepStrictEqual(r1.tags.find((t) => t[0] === 'E'), ['E', signed.id]);
   assert.deepStrictEqual(r1.tags.find((t) => t[0] === 'K'), ['K', '11']);
-  forum._applyReply(r1); // simulate relay echo reaching the original author's client
+  forum._applyReply(r1);
 
   const forumAsReplier2 = createForum({ relayPool: pool, auth: replier2 });
   await new Promise((r) => setTimeout(r, 5));
@@ -1511,10 +1351,8 @@ async function testForum() {
   assert.strictEqual(replies[0].content, 'first reply', 'replies ordered oldest-first');
   assert.strictEqual(replies[1].content, 'second reply');
 
-  // empty reply content rejected
   await assert.rejects(() => forumAsReplier1.reply(signed.id, author.pubkey, '   '), /Reply cannot be empty/);
 
-  // a second post in the same channel, plus a post in a DIFFERENT channel, don't cross-contaminate
   await forum.createPost(channelId, serverId, 'Second post', 'body2');
   assert.strictEqual(forum.listFor(channelId).length, 2, 'two posts in the same channel');
   await forum.createPost('other-channel', serverId, 'Elsewhere', 'body3');
@@ -1523,8 +1361,6 @@ async function testForum() {
   console.log('  forum: pass');
 }
 
-// NIP-25 kind:7 reactions: publish, last-write-wins aggregation, unreact via
-// kind:5 deletion, and defense against a stale/out-of-order-delivered reply.
 async function testReactions() {
   const alice = newAuth();
   const bob = newAuth();
@@ -1546,29 +1382,25 @@ async function testReactions() {
   assert.strictEqual(got[0].count, 1);
   assert.strictEqual(got[0].mine, true, 'alice sees her own reaction as mine');
 
-  // bob reacts with a different emoji — both should now show, counted separately
   const reactionsBob = createReactions({ relayPool: pool, auth: bob });
   const bobSigned = await reactionsBob.react(targetId, messageAuthor.pubkey, '🎉');
-  reactionsAlice._applyReaction(bobSigned); // simulate relay echo reaching alice's client
+  reactionsAlice._applyReaction(bobSigned);
   got = reactionsAlice.getFor(targetId);
   assert.strictEqual(got.length, 2, 'two distinct emoji present');
   const bobEntry = got.find((r) => r.content === '🎉');
   assert.strictEqual(bobEntry.count, 1);
   assert.strictEqual(bobEntry.mine, false, 'bobs reaction is not alices');
 
-  // alice changes her reaction (last-write-wins per pubkey+target) — an older
-  // stale replay must not resurrect the earlier emoji count
   const changed = await reactionsAlice.react(targetId, messageAuthor.pubkey, '❤️');
   got = reactionsAlice.getFor(targetId);
   assert.strictEqual(got.find((r) => r.content === '👍'), undefined, 'old emoji replaced, not accumulated');
   assert.strictEqual(got.find((r) => r.content === '❤️').count, 1);
 
-  const staleReplay = { ...signed, id: 'stale-old-id', created_at: signed.created_at - 10 }; // genuinely predates '❤️'
+  const staleReplay = { ...signed, id: 'stale-old-id', created_at: signed.created_at - 10 };
   reactionsAlice._applyReaction(staleReplay);
   got = reactionsAlice.getFor(targetId);
   assert.strictEqual(got.find((r) => r.content === '👍'), undefined, 'stale out-of-order replay does not resurrect a superseded reaction');
 
-  // unreact publishes a kind:5 deletion and removes the local entry
   await reactionsAlice.unreact(targetId);
   const deletionEvent = pool.published[pool.published.length - 1];
   assert.strictEqual(deletionEvent.kind, 5);
@@ -1578,8 +1410,6 @@ async function testReactions() {
   console.log('  reactions: pass');
 }
 
-// Offline-first message store (src/message.js): persistence across a fresh
-// MessageBus instance sharing storage+roomKey, offline-queue-then-flush.
 function testVoiceSessionDepsGuard() {
   const xstate = { createMachine: () => ({}), createActor: () => ({}) };
   const fsm = { voiceMachine: {} };
@@ -1645,11 +1475,7 @@ function testVoiceIceServers() {
   const original = getVoiceIceServers();
   assert.ok(original.length > 0, 'voice.js ships a real default ICE server list');
   assert.ok(original.some((s) => /^stun:/.test(s.urls)), 'default list includes at least one STUN server');
-  // STUN-only by design (2026-08-25, commit 3fce064): no working free/static-credential
-  // public TURN provider exists anymore, and the account-gated alternatives require a
-  // server-side token proxy this no-backend repo doesn't have. Peers behind symmetric
-  // NAT/CGNAT on both sides will fail to connect until a self-hosted/paid TURN relay is
-  // configured via setIceServers() -- a visible, intentional tradeoff, not a regression.
+
   console.log('  voice ice servers: pass');
 }
 

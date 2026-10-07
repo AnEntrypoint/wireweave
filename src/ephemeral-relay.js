@@ -1,25 +1,11 @@
-// A minimal, REAL NIP-01-speaking nostr relay, meant to be spun up
-// in-process for deterministic tests independent of public relay uptime
-// (AGENTS.md's testRelay() depends on real public relays specifically to
-// mask single-relay flake — this is the complementary piece: a real relay
-// process test.js itself controls, for assertions that need to NOT flake
-// on a third party's infrastructure). This is not a mock: it's a real
-// `ws` WebSocket server that actually parses/validates/stores/relays
-// real signed nostr events per the NIP-01 wire protocol (EVENT/REQ/CLOSE/
-// EOSE/OK/NOTICE), matching the repo's real-services-only test discipline
-// (an ephemeral relay is a real relay, just short-lived and unpersisted).
-//
-// Deliberately minimal: in-memory event store (no expiry/persistence
-// needed for a test run), naive filter matching (kinds/authors/#tag/since/
-// until/limit — the filter shapes wireweave's own RelayPool actually
-// sends), and no NIP-11 relay-info document. Not meant for production use.
+
 
 export class EphemeralRelay {
   constructor({ WebSocketServer, verifyEvent = null, port = 0 } = {}) {
     if (!WebSocketServer) throw new Error('EphemeralRelay: WebSocketServer required (e.g. ws\'s WebSocketServer)');
     this.verifyEvent = verifyEvent;
     this.events = [];
-    this.clients = new Map(); // ws -> Map<subId, filters[]>
+    this.clients = new Map();
     this.wss = new WebSocketServer({ port });
     this.wss.on('connection', (ws) => this._onConnection(ws));
   }
@@ -51,8 +37,7 @@ export class EphemeralRelay {
     }
     if (!this.events.find((e) => e.id === event.id)) {
       this.events.push(event);
-      // Broadcast to every OTHER client's matching live subscriptions —
-      // real relay fan-out, not just an echo back to the publisher.
+
       for (const [clientWs, subs] of this.clients) {
         for (const [subId, filters] of subs) {
           if (this._matches(event, filters)) this._send(clientWs, ['EVENT', subId, event]);

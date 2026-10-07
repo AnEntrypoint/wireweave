@@ -17,6 +17,7 @@ import { createReactions } from './reactions.js';
 import { createMutes } from './mutes.js';
 import { createForum } from './forum.js';
 import { register } from './debug.js';
+import { createFeedback } from './feedback.js';
 
 export const createWireweave = ({
   nostrTools,
@@ -90,23 +91,28 @@ export const createWireweave = ({
 
   const setCurrentChannel = (id) => { currentChannelId = id; return id ? chat.loadHistory(id) : Promise.resolve(); };
 
-  // DM is lazy: nip44 encryption requires a privkey-backed signer (not extension)
-  // and nostr-tools built with nip44. Constructing it eagerly would throw for
-  // builds without nip44, so we defer to first use — mirrors ensureVoice.
+
+
   let dm = null;
   const ensureDM = () => {
     if (!dm) dm = createDM({ relayPool: pool, auth, nostrTools });
     return dm;
   };
 
-  // DataSession is lazy for the same reason as DM: requires xstate and FSM.
-  // onSwitch accumulates subscriptions across all visited servers (idempotent
-  // Map pattern) — no unsubscribe on server switch by design so offline data
-  // from prior servers remains cached.
+
+
+
   let data = null;
   const ensureData = ({ room = '', displayName = 'Guest', namespace = '' } = {}) => {
     if (!data) data = createDataSession({ fsm, xstate, relayPool: pool, auth, namespace });
     return data;
+  };
+
+  const feedbackInboxes = new Map();
+  const ensureFeedback = ({ serverId = servers.currentServerId, timeoutMs = 8000, maxEvents = 2000 } = {}) => {
+    if (!serverId) throw new Error('Feedback serverId required');
+    if (!feedbackInboxes.has(serverId)) feedbackInboxes.set(serverId, createFeedback({ relayPool: pool, auth, roles, serverId, timeoutMs, maxEvents }));
+    return feedbackInboxes.get(serverId);
   };
 
   const api = {
@@ -117,6 +123,7 @@ export const createWireweave = ({
     ensureDM,
     get data() { return data; },
     ensureData,
+    ensureFeedback,
     setCurrentChannel,
     get currentChannelId() { return currentChannelId; },
     get currentServerId() { return servers.currentServerId; }

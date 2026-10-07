@@ -85,8 +85,6 @@ export class Channels extends EventTarget {
     await this._publish(); this._emit('updated', { channels: this.channels, categories: this.categories });
   }
 
-  // Per-channel metadata patch — used for topic, voiceMode, and any future
-  // server-published channel-scoped configuration. Owner-only.
   async update(id, patch) {
     if (!this.isOwner()) throw new Error('owner only');
     if (!patch || typeof patch !== 'object') return;

@@ -242,11 +242,7 @@ consumes it as a git submodule. Do not re-add npm-publish CI, an
 
 ## CI
 
-`.github/workflows/ci.yml` runs `node --check src/*.js` then installs `ws` +
-`nostr-tools` (`--no-save`) and runs `node test.js` on every push/PR. The
-real-relay phases tolerate single-relay flake via the multi-relay `RELAYS`
-array; `compose`/`data` tests skip when `xstate` is absent (not installed in
-CI) — that is expected, not a failure.
+This checkout currently has no `.github/workflows/ci.yml` or deployment workflow. Do not claim a CI run from local verification. Public relay integration remains in root `test.js`; the deterministic production relay primitive is `EphemeralRelay`.
 
 ## HiddenSpawn malware was committed to history (removed, but scan periodically)
 
@@ -269,4 +265,22 @@ of its actual full diff.
 
 The single integration witness (`test.js`) grows as coverage expands. The previous <=200 line cap is superseded: the file may grow freely as long as it remains a single file at repo root, mock-free for network tests, and real-services only for the relay round-trip. Current size: ~1220 lines (32+ tests, including the relay-health-scoring suite). Do not split into a `test/` directory.
 
+## Contracts retained from the comment sweep
+
+The on-relay d-tag prefix is `zellous-` in `src/dtag.js`, and voice signaling also uses `zellous-rtc:`. These published identifiers survive the wireweave rename; changing them needs a migration. The framing header in `src/frame.js` is little-endian with magic byte 0xF7.
+
+Nostr identity has no password-reset backend. Back up locally held identities with `auth.nsecEncode()`; it returns null for extension-owned keys. Extension login clears the old `zn_sk`/`zn_pk` storage pair to prevent reload from restoring a different identity. DM uses kind:14 rumors wrapped as kind:1059 for both the recipient and the sender's self-copy; the current implementation requires a local private key. Outer gift-wrap p-tags disclose the recipient, so do not claim that recipient identity is hidden.
+
+Voice currently defaults to STUN only; DataSession still carries shared public TURN demo credentials. These defaults differ, and hosted applications needing reliable NAT traversal must provide their own ICE servers with each module's `setIceServers()`. Voice force-relay without configured TURN emits a warning and falls back to direct ICE. Input-device constraints apply on the next join; DTX/FEC apply on the next SDP exchange through Opus fmtp parameters `usedtx`/`useinbandfec`, while bitrate changes reach current audio senders. Voice currently creates audio senders only; `cameraStream` has no producer, so video simulcast is not implemented.
+
+Voice's cloned local analysis track must stay enabled independently of the transmit track; `connect()` and `setMuted()` explicitly enable it because cloning inherits the source's current enabled state. Keep the epoch checks after asynchronous join work so superseded joins cannot resurrect state. Participants use shortened nostr IDs while peer connections and hub-election matrices use full public keys; bridge these through `pubkeyByShortId`.
+
+Chat deletions use kind:5 events referencing event IDs rather than channels, requiring local filtering and remembered deleted IDs. PoW mining is opt-in and bounded; exhaustion returns the unmined template. Forum roots use kind:11 and replies kind:1111; reply counts derive from received events. EphemeralRelay is an in-memory development relay, without persistence or NIP-11 metadata, and is not a production relay.
+
+Site `.panel.ww-panel` needs greater specificity than the design SDK's panel rule because the SDK inserts styles after the site's inline CSS. Accent surfaces must use `--panel-accent-fg`, including dark mode where the accent background becomes light.
+
 @.gm/next-step.md
+
+## Public page feedback
+
+`site/theme.mjs` prepares GitHub issues with page context and validated custom JSON metadata; it never posts before the visitor reviews on GitHub. GitHub Issues is enabled on the repository. SDK consumers can instead use `ensureFeedback({serverId})`, `mountFeedbackForm`, and `createFeedbackTools`/the `wireweave-feedback` JSON CLI. Feedback content, names, contact and metadata are public. Preserve the signing identity and the thread reference (including unconfirmed delivery references) for followup. Role authority comes from verified owner-signed role history; revoked developers no longer contribute actions when a thread is replayed. `fetchOnce` defaults to available-relay history; requireAllRelays enables strict hydration and historyStatus discloses its scope. The EOSE callback now receives the relay URL so consumers can count unique relays. Event-cap overflow raises FEEDBACK_HISTORY_INCOMPLETE.

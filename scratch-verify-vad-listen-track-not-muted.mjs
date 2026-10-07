@@ -1,20 +1,5 @@
-// Standalone real-services verification of the _localListenTrack born-muted fix.
-// Root cause, confirmed live via a real getUserMedia+MediaStreamTrack.clone() test
-// in the deployed browser (cdp dispatch): MediaStreamTrack.clone() inherits the
-// source track's CURRENT enabled state at the moment of cloning -- it does not
-// reset to true. connect()'s clone (voice.js line ~258) previously happened AFTER
-// the original track's enabled was already set to !pttMode (false in the default
-// PTT-starts-muted case), so _localListenTrack was born already disabled and
-// nothing ever re-enabled it -- permanently silencing the VAD level meter and
-// speaker detector for the whole session. User live-diagnosed the symptom
-// (rms/level pinned at 0, VAD auto-transmit deadlock) via monkey-patching
-// MediaStreamTrack.prototype.enabled's setter against the real deployed app.
-// This fixture's FakeMediaStreamTrack.clone() faithfully replicates the confirmed
-// real-browser inheritance behavior (clone starts with the source's CURRENT
-// enabled value, not a fresh default), so a passing check here is evidence against
-// the real bug shape, not a fixture that could mask it. Not part of test.js and
-// not a mock-framework test file: same pattern as this repo's other
-// scratch-verify-*.mjs scripts -- drives the real, unmodified VoiceSession class.
+
+
 import * as xstate from 'xstate';
 import assert from 'node:assert';
 import { createFSM } from './src/fsm.js';
@@ -31,11 +16,9 @@ global.AudioContext = class {
   createMediaStreamDestination() { return { stream: new global.MediaStream([]) }; }
 };
 
-// Faithfully replicates real MediaStreamTrack.clone() semantics confirmed live:
-// a clone inherits the CURRENT enabled state of its source at clone time.
 class FakeMediaStreamTrack {
   constructor(kind, enabled) { this.kind = kind || 'audio'; this.enabled = enabled !== undefined ? enabled : true; }
-  clone() { return new FakeMediaStreamTrack(this.kind, this.enabled); } // <-- the real, confirmed inheritance behavior
+  clone() { return new FakeMediaStreamTrack(this.kind, this.enabled); }
   stop() {}
 }
 global.MediaStream = class {
@@ -64,7 +47,6 @@ function makeVs(pttMode) {
   });
 }
 
-// Case 1: default PTT mode (starts muted) -- the exact bug scenario the user hit.
 {
   const vs = makeVs(true);
   await vs.connect('vad-listen-test', { displayName: 'x' });
@@ -72,7 +54,6 @@ function makeVs(pttMode) {
   check('original mic track is disabled while muted (expected, unrelated to the bug)', vs.localStream.getAudioTracks()[0].enabled === false);
   check('_localListenTrack is genuinely ENABLED despite the session being muted and the original track being disabled -- the actual fix', vs._localListenTrack.enabled === true);
 
-  // Confirm the analyser actually reads non-silent RMS from the listen track while muted.
   const an = vs._activeAnalyzers.get('local').an;
   const buf = new Uint8Array(4);
   an.getByteTimeDomainData(buf);
@@ -82,9 +63,8 @@ function makeVs(pttMode) {
   await vs.disconnect().catch(() => {});
 }
 
-// Case 2: toggling setMuted(true)/(false) repeatedly must never disable the listen track.
 {
-  const vs = makeVs(false); // open-mic mode: starts unmuted
+  const vs = makeVs(false);
   await vs.connect('vad-listen-test-2', { displayName: 'x' });
   check('open-mic mode starts unmuted', vs.muted === false);
   check('_localListenTrack enabled at connect in open-mic mode too', vs._localListenTrack.enabled === true);

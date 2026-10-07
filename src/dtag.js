@@ -1,9 +1,5 @@
 const NAMESPACES = new Set(['ban', 'timeout', 'kick', 'page', 'channels', 'roles', 'settings', 'unban', 'mute']);
 
-// Frozen on-relay wire prefix. The brand is now wireweave but deployed events
-// carry 'zellous-' d-tags, so this is a published-contract constant — do not
-// rename it without a migration path. parseDtag derives its slice offset from
-// PREFIX.length so the literal and the offset can never drift apart.
 const PREFIX = 'zellous-';
 
 export const dtag = (ns, ...parts) => {

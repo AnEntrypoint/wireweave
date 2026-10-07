@@ -1,14 +1,5 @@
-// Standalone real-services verification of connectionQuality state transitions
-// added to src/voice.js's VoiceSession (participants.connectionQuality was
-// previously set once to 'connecting' on presence and never updated again --
-// diagnosed live against a deployed app where a stuck remote tile stayed
-// "connecting" forever regardless of actual connection outcome). Not part of
-// test.js and not a mock-framework test file: same pattern as
-// scratch-verify-connect-watchdog.mjs -- drives the real, unmodified
-// VoiceSession class end to end with a real xstate actor and a controllable
-// fake RTCPeerConnection, exercising the actual production code paths
-// (_setConnectionQuality, onconnectionstatechange, _doIceRestart,
-// _scheduleReconnect's give-up branch), not a reimplementation of them.
+
+
 import * as xstate from 'xstate';
 import assert from 'node:assert';
 import { createFSM } from './src/fsm.js';
@@ -47,7 +38,7 @@ const fakeMediaDevices = { getUserMedia: async () => { throw new Error('no mic i
 
 console.log('=== connectionQuality state transitions: real VoiceSession verification ===\n');
 
-const lowerPeer = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; // < our pubkey -> we are offerer
+const lowerPeer = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const shortId = 'nostr-' + lowerPeer.slice(0, 12);
 
 function makeVs() {
@@ -60,14 +51,12 @@ function makeVs() {
   return { vs, getPc: () => createdPc };
 }
 
-// --- Test 1: presence sets connectionQuality:'connecting' (baseline, pre-fix behavior) ---
 {
   const { vs } = makeVs();
   vs.participants.set(shortId, { identity: 'peer', isSpeaking: false, isMuted: false, isLocal: false, hasVideo: false, connectionQuality: 'connecting' });
   check('baseline: participant starts at connecting', vs.participants.get(shortId).connectionQuality === 'connecting');
 }
 
-// --- Test 2: reaching 'connected' transitions quality to 'good' ---
 {
   const { vs, getPc } = makeVs();
   vs.participants.set(shortId, { identity: 'peer', isSpeaking: false, isMuted: false, isLocal: false, hasVideo: false, connectionQuality: 'connecting' });
@@ -79,7 +68,6 @@ function makeVs() {
   vs._closePeer(lowerPeer);
 }
 
-// --- Test 3: 'disconnected' transitions quality to 'poor' immediately (not stuck at connecting) ---
 {
   const { vs, getPc } = makeVs();
   vs.participants.set(shortId, { identity: 'peer', isSpeaking: false, isMuted: false, isLocal: false, hasVideo: false, connectionQuality: 'connecting' });
@@ -91,7 +79,6 @@ function makeVs() {
   vs._closePeer(lowerPeer);
 }
 
-// --- Test 4: _doIceRestart (watchdog/ICE-restart path) also marks quality poor ---
 {
   const { vs, getPc } = makeVs();
   vs.participants.set(shortId, { identity: 'peer', isSpeaking: false, isMuted: false, isLocal: false, hasVideo: false, connectionQuality: 'connecting' });
@@ -103,7 +90,6 @@ function makeVs() {
   vs._closePeer(lowerPeer);
 }
 
-// --- Test 5: exhausted retries (6 attempts) -> quality becomes 'failed' AND peer-connect-failed fires exactly once ---
 {
   const { vs } = makeVs();
   vs.participants.set(shortId, { identity: 'peer', isSpeaking: false, isMuted: false, isLocal: false, hasVideo: false, connectionQuality: 'connecting' });
@@ -117,7 +103,6 @@ function makeVs() {
   check('quality becomes failed on retry exhaustion', vs.participants.get(shortId).connectionQuality === 'failed');
 }
 
-// --- Test 6: a normal clean leave still fires peer-closed, NOT peer-connect-failed ---
 {
   const { vs } = makeVs();
   vs.participants.set(shortId, { identity: 'peer', isSpeaking: false, isMuted: false, isLocal: false, hasVideo: false, connectionQuality: 'good' });
@@ -131,12 +116,11 @@ function makeVs() {
   check('clean _closePeer does NOT fire peer-connect-failed', failedEvents === 0);
 }
 
-// --- Test 7: _setConnectionQuality is a no-op for an unknown/already-left participant (no throw, no spurious event) ---
 {
   const { vs } = makeVs();
   let emitted = 0;
   vs.addEventListener('participants', () => { emitted++; });
-  vs._setConnectionQuality('c'.repeat(64), 'good'); // never added to participants
+  vs._setConnectionQuality('c'.repeat(64), 'good');
   check('no-op on unknown participant: zero participants events fired', emitted === 0);
 }
 

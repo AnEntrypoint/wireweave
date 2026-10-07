@@ -1,8 +1,4 @@
-// AnEntrypoint design-system theme for flatspace.
-// Renders site chrome via anentrypoint-design SDK using REAL SDK components.
-// theme.mjs emits HTML shell + bootstrap that consumes YAML baked into <script id="__site__">.
-// SDK provides ALL styling via installStyles(); site/app-shell.css supplies wireweave's own
-// scoped ww-* classes (inlined into the head <style> below) -- no inline style="..." attributes.
+
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -29,11 +25,6 @@ document.documentElement.classList.add('ds-247420');
 const data = JSON.parse(document.getElementById('__site__').textContent);
 const { site, nav, home } = data;
 
-// Editorial Hero — asymmetric grid-template-areas layout (.ds-hero), the
-// house pattern this SDK mandates (AGENTS.md "asymmetric grid tension...
-// never a centered stack"). Replaces the ad-hoc C.Panel+padded-div stack
-// this used to render (title/subhead/body/badges/ctas all centered in one
-// column, a generic-template tell).
 function Hero() {
   if (!home || !home.hero) return null;
   const hero = home.hero;
@@ -155,6 +146,20 @@ function Examples() {
   });
 }
 
+function FeedbackPanel() {
+  return C.Panel({ title: 'Leave a message', class: 'ww-panel', children: [
+    h('p', { class: 'ww-lede-copy' }, 'Share feedback with the developers. Messages and metadata are public on GitHub; posting requires a GitHub account.'),
+    h('form', { id: 'page-feedback', class: 'ww-feedback-form' },
+      h('label', {}, 'Subject', h('input', { name: 'subject', required: true, maxlength: '120' })),
+      h('label', {}, 'Message', h('textarea', { name: 'message', required: true, maxlength: '6000', rows: '5' })),
+      h('label', {}, 'Metadata as JSON (optional)', h('textarea', { name: 'metadata', maxlength: '2000', rows: '3' })),
+      h('button', { type: 'submit', class: 'btn' }, 'Prepare message'),
+      h('p', { id: 'page-feedback-status', role: 'status', 'aria-live': 'polite' }),
+      h('a', { id: 'page-feedback-review', hidden: true, target: '_blank', rel: 'noopener noreferrer', class: 'btn' }, 'Review and post on GitHub')),
+    h('a', { href: 'https://github.com/AnEntrypoint/wireweave/issues' }, 'View messages and developer replies')
+  ]});
+}
+
 function Footer() {
   return h('footer', { class: 'app-status' },
     h('span', { class: 'item' }, 'styled with '),
@@ -185,12 +190,43 @@ const App = C.AppShell({
      Features(),
      Modules(),
      Quickstart(),
-     Examples()
+     Examples(),
+     FeedbackPanel()
    ),
    status: Footer()
  });
 
 applyDiff(document.getElementById('app'), [App]);
+const feedbackForm = document.getElementById('page-feedback');
+const feedbackReview = document.getElementById('page-feedback-review');
+const feedbackStatus = document.getElementById('page-feedback-status');
+feedbackForm.addEventListener('input', () => { feedbackReview.hidden = true; feedbackReview.removeAttribute('href'); feedbackStatus.textContent = ''; });
+feedbackForm.addEventListener('submit', event => {
+  event.preventDefault();
+  feedbackReview.hidden = true;
+  feedbackReview.removeAttribute('href');
+  try {
+    const subject = feedbackForm.elements.subject.value.trim();
+    const message = feedbackForm.elements.message.value.trim();
+    if (!subject || !message) throw new Error('Enter a subject and message.');
+    if (subject.length > 120 || message.length > 6000) throw new Error('Please shorten your subject or message.');
+    const extra = feedbackForm.elements.metadata.value.trim() ? JSON.parse(feedbackForm.elements.metadata.value) : {};
+    if (!extra || typeof extra !== 'object' || Array.isArray(extra)) throw new Error('Metadata must be a JSON object.');
+    const metadata = { ...extra, source: 'wireweave-page', page: location.origin + location.pathname, title: document.title };
+    const serialized = JSON.stringify(metadata, null, 2).replaceAll(String.fromCharCode(96), String.fromCharCode(92) + 'u0060');
+    if (serialized.length > 3000) throw new Error('Please shorten your metadata.');
+    const fence = String.fromCharCode(96).repeat(3);
+    const lineBreak = String.fromCharCode(10);
+    const url = new URL('https://github.com/AnEntrypoint/wireweave/issues/new');
+    url.searchParams.set('title', subject);
+    url.searchParams.set('body', [message, '', 'Page metadata', fence + 'json', serialized, fence].join(lineBreak));
+    if (url.href.length > 14000) throw new Error('Please shorten your message or metadata.');
+    feedbackReview.href = url.href;
+    feedbackReview.hidden = false;
+    feedbackStatus.textContent = 'Ready to review on GitHub. Your message has not been posted yet.';
+  } catch (error) { feedbackStatus.textContent = error.message; }
+});
+
 `;
 
 const html = ({ site, nav, home }) => `<!DOCTYPE html>

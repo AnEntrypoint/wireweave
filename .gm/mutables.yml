@@ -1,0 +1,112 @@
+- id: feedback-public-boundary
+  subject: Use existing owner/mod role authority for triage, public Nostr events for content/metadata, visitor key retained in storage for followup; no production owner key is configured in site.
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: src/roles.js getRole identifies owner/admin/moderator; src/auth.js generateKey/loadFromStorage retain visitor signing identity; exhaustive site regex owner/npub/64hex found no configured developer key. SDK reusable mount with explicit serverId is implementable without inventing production identity.
+- id: feedback-state-totality
+  obligation_kind: totality
+  subject: Feedback totality across real relay submission, hydration, snapshots, malformed inputs and cleanup.
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: 'Live real two-relay runtime in .gm/feedback-state-witness.json: malformed metadata/message rejected; submit/reply/update/history preserved JSON and resolved status; snapshot mutation cannot alter state; replay duplicate leaves seen unchanged; owned subscriptions after cleanup=0. Browser form kept draft and reference on delivery timeout then observed actual reconnect delivery; queries return detached snapshots.'
+- id: feedback-state-ownership
+  obligation_kind: ownership
+  subject: Feedback ownership across real relay submission, hydration, snapshots, malformed inputs and cleanup.
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: 'Live real two-relay runtime in .gm/feedback-state-witness.json: malformed metadata/message rejected; submit/reply/update/history preserved JSON and resolved status; snapshot mutation cannot alter state; replay duplicate leaves seen unchanged; owned subscriptions after cleanup=0. Browser form kept draft and reference on delivery timeout then observed actual reconnect delivery; queries return detached snapshots.'
+- id: feedback-state-replay
+  obligation_kind: replay
+  subject: Feedback replay across real relay submission, hydration, snapshots, malformed inputs and cleanup.
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: 'Live real two-relay runtime in .gm/feedback-state-witness.json: malformed metadata/message rejected; submit/reply/update/history preserved JSON and resolved status; snapshot mutation cannot alter state; replay duplicate leaves seen unchanged; owned subscriptions after cleanup=0. Browser form kept draft and reference on delivery timeout then observed actual reconnect delivery; queries return detached snapshots.'
+- id: feedback-state-effect-boundary
+  obligation_kind: effect-boundary
+  subject: Feedback effect-boundary across real relay submission, hydration, snapshots, malformed inputs and cleanup.
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: 'Live real two-relay runtime in .gm/feedback-state-witness.json: malformed metadata/message rejected; submit/reply/update/history preserved JSON and resolved status; snapshot mutation cannot alter state; replay duplicate leaves seen unchanged; owned subscriptions after cleanup=0. Browser form kept draft and reference on delivery timeout then observed actual reconnect delivery; queries return detached snapshots.'
+- id: feedback-conc-happens-before
+  obligation_kind: happens-before
+  subject: Concurrent feedback submit/fetch have distinct signed IDs and subscription ownership; retained record count and waits bounded.
+  depends_on:
+  - feedback-state-ownership
+  - feedback-state-replay
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: 'Live actual two-relay concurrent witness .gm/feedback-conc-witness.json: 10 simultaneous publishes have 10 distinct IDs, simultaneous scoped fetches each return 5 correct threads, strict EOSE completes both relays, maxEvents4 retains exactly4 and signals FEEDBACK_HISTORY_INCOMPLETE, final subscriptions0.'
+- id: feedback-conc-disjointness
+  obligation_kind: disjointness
+  subject: Concurrent feedback submit/fetch have distinct signed IDs and subscription ownership; retained record count and waits bounded.
+  depends_on:
+  - feedback-state-ownership
+  - feedback-state-replay
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: 'Live actual two-relay concurrent witness .gm/feedback-conc-witness.json: 10 simultaneous publishes have 10 distinct IDs, simultaneous scoped fetches each return 5 correct threads, strict EOSE completes both relays, maxEvents4 retains exactly4 and signals FEEDBACK_HISTORY_INCOMPLETE, final subscriptions0.'
+- id: feedback-conc-contention
+  obligation_kind: contention
+  subject: Concurrent feedback submit/fetch have distinct signed IDs and subscription ownership; retained record count and waits bounded.
+  depends_on:
+  - feedback-state-ownership
+  - feedback-state-replay
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: 'Live actual two-relay concurrent witness .gm/feedback-conc-witness.json: 10 simultaneous publishes have 10 distinct IDs, simultaneous scoped fetches each return 5 correct threads, strict EOSE completes both relays, maxEvents4 retains exactly4 and signals FEEDBACK_HISTORY_INCOMPLETE, final subscriptions0.'
+- id: feedback-sec-secrets
+  obligation_kind: secrets
+  subject: Feedback secrets boundaries validated with signed attackers, safe page metadata/rendering, replay and no literal secrets.
+  depends_on:
+  - feedback-state-replay
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: Actual security witness .gm/feedback-sec-witness.json:10 rapid awaited status pairs all resolved, reloaded sequence9 and20 owner updates, valid signed intruder triage and bad signature ignored. Real browser HTML payload rendered as literal text, JSON metadata backticks safely fenced, query secret excluded from GitHub page metadata. CLI uses env signer only; generated preview/browser profiles are gitignored and scoped commit excludes runtime.
+- id: feedback-sec-injection
+  obligation_kind: injection
+  subject: Feedback injection boundaries validated with signed attackers, safe page metadata/rendering, replay and no literal secrets.
+  depends_on:
+  - feedback-state-replay
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: Actual security witness .gm/feedback-sec-witness.json:10 rapid awaited status pairs all resolved, reloaded sequence9 and20 owner updates, valid signed intruder triage and bad signature ignored. Real browser HTML payload rendered as literal text, JSON metadata backticks safely fenced, query secret excluded from GitHub page metadata. CLI uses env signer only; generated preview/browser profiles are gitignored and scoped commit excludes runtime.
+- id: feedback-sec-identity-authority
+  obligation_kind: identity-authority
+  subject: Feedback identity-authority boundaries validated with signed attackers, safe page metadata/rendering, replay and no literal secrets.
+  depends_on:
+  - feedback-state-replay
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: Actual security witness .gm/feedback-sec-witness.json:10 rapid awaited status pairs all resolved, reloaded sequence9 and20 owner updates, valid signed intruder triage and bad signature ignored. Real browser HTML payload rendered as literal text, JSON metadata backticks safely fenced, query secret excluded from GitHub page metadata. CLI uses env signer only; generated preview/browser profiles are gitignored and scoped commit excludes runtime.
+- id: feedback-sec-message-timing
+  obligation_kind: message-timing
+  subject: Feedback message-timing boundaries validated with signed attackers, safe page metadata/rendering, replay and no literal secrets.
+  depends_on:
+  - feedback-state-replay
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: Actual security witness .gm/feedback-sec-witness.json:10 rapid awaited status pairs all resolved, reloaded sequence9 and20 owner updates, valid signed intruder triage and bad signature ignored. Real browser HTML payload rendered as literal text, JSON metadata backticks safely fenced, query secret excluded from GitHub page metadata. CLI uses env signer only; generated preview/browser profiles are gitignored and scoped commit excludes runtime.
+- id: feedback-res-exception-model
+  obligation_kind: exception-model
+  subject: Public feedback handles unreachable relay, offline acceptance uncertainty, malformed input and cleanup without losing drafts or fabricating receipts.
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: 'Actual real relay+closed-port .gm/feedback-res-witness.json: available-relay history succeeds with completeAcrossRelays=false, strict100ms read rejects, offline publish preserves FEEDBACK_DELIVERY_UNCONFIRMED plus eventId in tool error, CLI66KB input exits1 with JSON error, subscriptions0. Browser cut connection preserves draft/reference then reconnect observes same accepted thread; maxEvents4 stress emits explicit incomplete error.'
+- id: feedback-res-partial-failure
+  obligation_kind: partial-failure
+  subject: Public feedback handles unreachable relay, offline acceptance uncertainty, malformed input and cleanup without losing drafts or fabricating receipts.
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: 'Actual real relay+closed-port .gm/feedback-res-witness.json: available-relay history succeeds with completeAcrossRelays=false, strict100ms read rejects, offline publish preserves FEEDBACK_DELIVERY_UNCONFIRMED plus eventId in tool error, CLI66KB input exits1 with JSON error, subscriptions0. Browser cut connection preserves draft/reference then reconnect observes same accepted thread; maxEvents4 stress emits explicit incomplete error.'
+- id: feedback-res-degradation
+  obligation_kind: degradation
+  subject: Public feedback handles unreachable relay, offline acceptance uncertainty, malformed input and cleanup without losing drafts or fabricating receipts.
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: 'Actual real relay+closed-port .gm/feedback-res-witness.json: available-relay history succeeds with completeAcrossRelays=false, strict100ms read rejects, offline publish preserves FEEDBACK_DELIVERY_UNCONFIRMED plus eventId in tool error, CLI66KB input exits1 with JSON error, subscriptions0. Browser cut connection preserves draft/reference then reconnect observes same accepted thread; maxEvents4 stress emits explicit incomplete error.'
+- id: feedback-res-crucible
+  obligation_kind: crucible
+  subject: Public feedback handles unreachable relay, offline acceptance uncertainty, malformed input and cleanup without losing drafts or fabricating receipts.
+  session_id: ww-feedback-20261007
+  status: witnessed
+  witness_evidence: 'Actual real relay+closed-port .gm/feedback-res-witness.json: available-relay history succeeds with completeAcrossRelays=false, strict100ms read rejects, offline publish preserves FEEDBACK_DELIVERY_UNCONFIRMED plus eventId in tool error, CLI66KB input exits1 with JSON error, subscriptions0. Browser cut connection preserves draft/reference then reconnect observes same accepted thread; maxEvents4 stress emits explicit incomplete error.'

@@ -1,19 +1,5 @@
-// ICE servers. STUN-only: TURN is required for symmetric/restricted-cone NAT pairs
-// (typical home routers, carrier-grade NAT, corporate networks) but no working free
-// static-credential public TURN provider exists anymore -- confirmed via live
-// RTCPeerConnection relay tests against 10+ candidates (metered.ca's current
-// global.relay.metered.ca and its newer staticauth HMAC scheme, numb.viagenie.ca,
-// several ~2013-era demo servers) plus research into every major current provider
-// (Metered, ExpressTURN, Cloudflare Calls, TurnRelay, elixir-webrtc/rel): all now
-// require account signup, several explicitly citing abuse prevention as why static
-// credentials were retired. This repo already hit this exact dead-end once before
-// (see git history for the openrelay.metered.ca -> global.relay.metered.ca swap,
-// which has since also died) -- it's a recurring pattern with free-tier TURN, not a
-// one-off broken link. A real fix needs either a paid/account-gated TURN provider
-// with a credential-issuing proxy (Cloudflare's own docs require keeping the API
-// token server-side, which this repo's no-backend design doesn't have) or a
-// self-hosted relay -- deliberately not done here; peers needing TURN (symmetric
-// NAT/CGNAT on both sides) will fail to connect until one of those is set up.
+
+
 const DEFAULT_ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -26,39 +12,24 @@ export const getIceServers = () => ICE_SERVERS.slice();
 const hasTurnServer = () => ICE_SERVERS.some(s => (Array.isArray(s.urls) ? s.urls : [s.urls]).some(u => typeof u === 'string' && (u.startsWith('turn:') || u.startsWith('turns:'))));
 
 const PRESENCE_EXPIRY = 300000;
-const HEARTBEAT = 5000;        // tight cadence: heartbeat carries election scores + reflexive addr
+const HEARTBEAT = 5000;
 const STALL_CHECK = 5000;
 const DISCONNECT_GRACE = 8000;
-// A peer whose pc never leaves 'new'/'connecting' (offer sent but the answer or
-// the answerer's ICE candidates never arrive back over the Nostr relay -- dropped
-// signal, relay hiccup, STUN gather that never completes) produces zero WebRTC
-// state-change events: onconnectionstatechange only fires on connected/
-// disconnected/failed/closed, none of which a stuck-at-'new' pc ever reaches on
-// its own. Every existing recovery path (_doIceRestart, _checkStall,
-// _scheduleReconnect) is gated on one of those events firing, so without this
-// watchdog such a peer hangs forever. Set equal to DISCONNECT_GRACE: comfortably
-// above real STUN/TURN gather + multi-relay Nostr round-trip latency, while
-// keeping worst-case perceived stall bounded to the same window as the existing
-// disconnected-branch recovery.
-const CONNECT_TIMEOUT = 8000;
-const HUB_HYSTERESIS_MS = 8000; // minimum hold-time before re-election can replace incumbent
-const HUB_REL_ADVANTAGE = 0.25; // challenger must beat incumbent by ≥25% to take over
 
-// Speaker-activity / queue / anti-overtalk tunables
-const SPEAKER_ACTIVE_RMS = 0.045;     // RMS threshold above which a stream counts as "speaking"
-const SPEAKER_HOLD_MS = 350;          // tail: stay marked speaking this long after last frame > threshold
-const SPEAKER_POLL_MS = 80;           // analyzer poll cadence
-const LEVEL_METER_CEILING = 0.35;     // raw RMS mapped to a full 0-1 meter bar (empirical loud-speech ceiling)
-const QUEUE_MAX_SEGMENT_MS = 30000;   // hard cap per segment
+const CONNECT_TIMEOUT = 8000;
+const HUB_HYSTERESIS_MS = 8000;
+const HUB_REL_ADVANTAGE = 0.25;
+
+const SPEAKER_ACTIVE_RMS = 0.045;
+const SPEAKER_HOLD_MS = 350;
+const SPEAKER_POLL_MS = 80;
+const LEVEL_METER_CEILING = 0.35;
+const QUEUE_MAX_SEGMENT_MS = 30000;
 const QUEUE_MIME_PREFS = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg'];
 const DC_LABEL = 'wireweave-queue';
-const DC_CHUNK_MAX = 14000;           // ~14 KB SCTP-friendly chunks
-const DC_HEADER = 'WW1';              // protocol marker
+const DC_CHUNK_MAX = 14000;
+const DC_HEADER = 'WW1';
 
-// Opus bitrate ladder: named quality tiers applied to the outbound audio
-// RTCRtpSender's encoding via setParameters(). This is the real mechanism
-// available for a single (non-simulcast) Opus sender — see the simulcast
-// note on VoiceSession below for why per-layer simulcast is out of scope.
 const OPUS_BITRATE_LADDER = {
   low: 16000,
   medium: 32000,
@@ -72,24 +43,8 @@ const deriveRoomId = async (serverId, channel) => {
   return 'zellous' + Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
 };
 
-// See data.js's defaultCreatePeerConnection for why this hook exists: it lets
-// a Node host inject a natively-tuned peer (ICE/UDP muxing, fixed port range,
-// proxy passthrough) without wireweave depending on any Node WebRTC binding.
 const defaultCreatePeerConnection = (config) => new RTCPeerConnection(config);
 
-// SIMULCAST-LITE — scope verified against the real API surface used in this
-// file before promising it. Real browser simulcast (multiple RTCRtpEncodingParameters
-// with distinct `rid`/`scaleResolutionDownBy` on one RTCRtpSender) is a VIDEO-only
-// technique: Opus is not encoded per-layer, and every addTransceiver/addTrack call
-// site in this file (see `_maybeConnect`, `_handleSignal`'s doAnswer) sends audio
-// only — `cameraStream` is a field with no producer, there is no video sendrecv
-// transceiver anywhere in this module. Promising `sendEncodings` simulcast here
-// would be fabricated. The honest, reachable analog for a single-encoding Opus
-// sender is *adaptive bitrate switching* driven by live getStats() (already
-// polled in `_sfuPoll`) — `setAudioQuality`/the bitrate ladder below is that
-// real, verifiable mechanism, not simulcast. If/when this module gains a real
-// video sender, true simulcast (sendEncodings on addTransceiver) becomes
-// reachable and should replace this note.
 export class VoiceSession extends EventTarget {
   constructor({
     fsm, xstate, relayPool, auth, mediaDevices, bans = null, serverId = '',
@@ -113,54 +68,30 @@ export class VoiceSession extends EventTarget {
     this.sfu = { mode: 'mesh', hub: null, hubLostAt: null, rttMatrix: new Map(), electionTimer: null, statsInterval: null, actor: null };
     this.retrySchedule = {};
     this._epoch = 0;
-    // Push-to-talk mode: when true (default, matches prior hardcoded behavior),
-    // connect() starts muted and the caller must setMuted(false)/requestTransmit()
-    // to speak. When false, connect() starts unmuted (open-mic / voice-activity mode).
+
     this.pttMode = !!pttMode;
-    // Mic-sensitivity threshold: RMS level above which the speaker-activity
-    // detector (_pollActivity) counts a stream as "speaking". Was a hardcoded
-    // module constant (SPEAKER_ACTIVE_RMS); now a real per-instance, live-settable value.
+
     this.micSensitivity = typeof micSensitivity === 'number' && micSensitivity > 0 ? micSensitivity : SPEAKER_ACTIVE_RMS;
-    // getUserMedia audio constraints — were hardcoded `true` at the single
-    // getUserMedia call site in connect(); now real constructor-configurable
-    // fields actually threaded into that call.
+
     this.noiseSuppression = !!noiseSuppression;
     this.echoCancellation = !!echoCancellation;
     this.autoGainControl = !!autoGainControl;
     this.deviceId = null;
-    // Opus bitrate ladder tier + DTX (discontinuous transmission / silence
-    // suppression). Applied for real in _applyAudioHints (bitrate, via the
-    // existing RTCRtpSender.setParameters call) and _mungeDtx (DTX, via
-    // real SDP fmtp munging — DTX is not an RTCRtpEncodingParameters field in
-    // the actual spec, it is negotiated in the Opus fmtp line).
+
     this.setAudioQuality(audioQuality);
     this.dtx = !!dtx;
-    // Opus in-band FEC (forward error correction): same fmtp-line mechanism
-    // class as DTX above, negotiated via `useinbandfec=1` rather than an
-    // RTCRtpEncodingParameters field. Materially improves perceived audio
-    // quality on lossy connections by letting the decoder reconstruct lost
-    // packets from redundant data in the following packet, at the cost of a
-    // small bitrate overhead — worthwhile default for voice chat.
+
     this.fec = !!fec;
-    // Force-TURN-relay toggle: when true, new peer connections are constrained
-    // to iceTransportPolicy 'relay' (candidates limited to TURN), trading direct-path
-    // latency for IP-address privacy from other participants. Live-settable via
-    // setForceRelay(); like setDtx, only takes effect for new/future connections.
+
     this.forceRelay = !!forceRelay;
   }
 
   setForceRelay(on) {
     this.forceRelay = !!on;
-    // iceTransportPolicy:'relay' restricts ICE candidate gathering to TURN-sourced
-    // relay candidates only -- STUN never produces those, so with no TURN server
-    // configured (see DEFAULT_ICE_SERVERS' file-header comment) this setting is a
-    // guaranteed, permanent connection failure rather than the "route via relay
-    // for IP privacy" behavior it's meant to provide. Warn now, at the point the
-    // setting is changed, rather than let it silently doom every future connect().
+
     if (this.forceRelay && !hasTurnServer()) this._emit('media-warning', { message: 'Force TURN is enabled but no TURN server is configured -- voice connections will fail to establish. Disable Force TURN or configure a TURN server via setIceServers().' });
   }
 
-  // Live-settable: mic-sensitivity threshold used by the speaker-activity poller.
   setMicSensitivity(rms) {
     if (typeof rms !== 'number' || !(rms > 0)) return;
     this.micSensitivity = rms;
@@ -168,10 +99,6 @@ export class VoiceSession extends EventTarget {
 
   setFec(on) { this.fec = !!on; }
 
-  // Live-settable input-device + processing constraints. Applied on the next
-  // getUserMedia call (join or rejoin) — matches the standard "settings apply
-  // on reconnect" UX pattern also used by setAudioQuality/setDtx; no live
-  // renegotiation of an already-open mic track is attempted.
   setAudioConstraints({ deviceId, noiseSuppression, autoGainControl, echoCancellation } = {}) {
     if (deviceId !== undefined) this.deviceId = deviceId || null;
     if (noiseSuppression !== undefined) this.noiseSuppression = !!noiseSuppression;
@@ -179,13 +106,8 @@ export class VoiceSession extends EventTarget {
     if (echoCancellation !== undefined) this.echoCancellation = !!echoCancellation;
   }
 
-  // Live-settable: push-to-talk vs open-mic mode. Does not itself mute/unmute —
-  // it changes what connect() defaults to and what releaseTransmit() restores to.
   setPttMode(on) { this.pttMode = !!on; }
 
-  // Live-settable: Opus target bitrate tier. Re-applies immediately to every
-  // connected peer's audio sender via the same setParameters() path _applyAudioHints
-  // uses, so a mid-call quality change actually reaches the wire.
   setAudioQuality(tier) {
     const kbps = OPUS_BITRATE_LADDER[tier];
     this.audioQuality = kbps ? tier : DEFAULT_AUDIO_QUALITY;
@@ -193,10 +115,6 @@ export class VoiceSession extends EventTarget {
     for (const [, peer] of this.peers) if (peer.pc) this._applyAudioHints(peer.pc);
   }
 
-  // Live-settable: DTX (silence suppression) toggle. Re-negotiation of an
-  // already-open connection isn't forced (that would require a fresh offer/answer);
-  // it takes effect on the next SDP exchange (offer, answer, or ICE restart) for
-  // open peers, and immediately for any new connection.
   setDtx(on) { this.dtx = !!on; }
 
   _initActor() {
@@ -205,16 +123,6 @@ export class VoiceSession extends EventTarget {
     this.actor.start();
   }
 
-  // Reentrancy guard: connect()/disconnect() are async and mutate shared
-  // instance state (peers, participants, localStream, roomId) across several
-  // await points. Rapid join→leave→rejoin (or a double-click join) used to
-  // interleave two in-flight calls: a stale connect() resuming after a newer
-  // disconnect() had already torn everything down would re-populate roomId/
-  // participants and re-send 'connected' into an actor the fresh call had
-  // already returned to idle, leaking the stale heartbeat/presence
-  // subscriptions and getUserMedia stream. Every call captures the epoch at
-  // entry and re-checks it after each await; a superseded call unwinds
-  // whatever it acquired instead of mutating shared state.
   async connect(channelName, { displayName = 'Guest' } = {}) {
     if (!this.actor) this._initActor();
     if (!this.actor.getSnapshot().can({ type: 'connect' })) await this.disconnect();
@@ -226,10 +134,7 @@ export class VoiceSession extends EventTarget {
     try {
       const roomId = await deriveRoomId(this.serverId, channelName);
       if (epoch !== this._epoch) return;
-      // No mic (denied permission, no device, or a headless/kiosk browser) must not block
-      // joining voice — downstream code already null-guards localStream throughout (mute
-      // toggle, recording, peer transceivers fall back to recvonly), so a mic-less join is
-      // a supported listen-only mode, not a degraded error state.
+
       let stream = null;
       try {
         stream = await this.md.getUserMedia({ audio: {
@@ -242,24 +147,12 @@ export class VoiceSession extends EventTarget {
       if (epoch !== this._epoch) { if (stream) stream.getTracks().forEach(t => t.stop()); return; }
       this.roomId = roomId;
       this.localStream = stream;
-      // PTT mode: gate closed at join, caller opens it via setMuted(false)/requestTransmit().
-      // Open-mic mode (pttMode=false): start unmuted.
+
       this.muted = this.pttMode;
       if (this.localStream) this.localStream.getAudioTracks().forEach(t => t.enabled = !this.pttMode);
       this.participants.clear();
       this.participants.set('local', { identity: displayName, isSpeaking: false, isMuted: this.pttMode, isLocal: true, hasVideo: false, connectionQuality: 'good' });
-      // Local speaker-activity detection needs to keep listening even while muted
-      // (VAD mode auto-unmutes ON speech, so it can't rely on the transmit-gated
-      // track to hear that speech in the first place). Clone the raw audio track
-      // — a clone's `enabled` is independent of the original ONCE SET, but
-      // MediaStreamTrack.clone() inherits the source's CURRENT enabled state at
-      // clone time (confirmed live: track.enabled=false then .clone() produces an
-      // already-disabled clone, not a fresh enabled:true one) — so cloning after
-      // line above sets the original to !pttMode (false in the default PTT-starts-
-      // muted case) previously born the clone already silenced, permanently, since
-      // nothing else ever touches it. Force enabled=true explicitly right after
-      // cloning, independent of the original's state, so local analysis never goes
-      // silent regardless of clone-order or mute state; it is never sent to peers.
+
       if (this.localStream) {
         const track = this.localStream.getAudioTracks()[0];
         this._localListenTrack = track ? track.clone() : null;
@@ -313,18 +206,12 @@ export class VoiceSession extends EventTarget {
 
   toggleMic() { return this.setMuted(!this.muted); }
 
-  // setMuted is the canonical API. PTT layers should call setMuted(false) on
-  // hold-start and setMuted(true) on hold-end. Anti-overtalk lives below as
-  // requestTransmit / releaseTransmit which gate the unmute on remote silence.
   setMuted(want) {
     const next = !!want;
     if (this.muted === next) return;
     this.muted = next;
     if (this.localStream) this.localStream.getAudioTracks().forEach(t => t.enabled = !this.muted);
-    // Defensive re-assert: _localListenTrack must never be silenced by mute state
-    // (see connect()'s own comment on why) -- this setter never intentionally
-    // touches it, but re-asserting here costs nothing and makes the invariant
-    // self-healing rather than solely dependent on connect()'s one-time clone-order fix.
+
     if (this._localListenTrack) this._localListenTrack.enabled = true;
     const local = this.participants.get('local'); if (local) local.isMuted = this.muted;
     if (this.muted) this._localActivityClear();
@@ -332,18 +219,12 @@ export class VoiceSession extends EventTarget {
     this._emit('participants', { list: this.getParticipants() });
   }
 
-  // ────────────────────────────────────────────────────────────────────────
-  // Speaker-activity detection
-  // Each peer stream + the local stream gets a Web Audio analyser. We poll
-  // the rms and flip participant.isSpeaking with hysteresis so the rest of
-  // the app (including the queue layer) can react.
-  // ────────────────────────────────────────────────────────────────────────
   _ensureAudioCtx() {
     if (this._actx && this._actx.state !== 'closed') return this._actx;
     const Ctx = (typeof AudioContext !== 'undefined') ? AudioContext : (typeof webkitAudioContext !== 'undefined') ? webkitAudioContext : null;
     if (!Ctx) return null;
     this._actx = new Ctx();
-    this._activeAnalyzers = new Map();   // key → { node, source, lastActive, gainNode? }
+    this._activeAnalyzers = new Map();
     this._mixedDest = this._actx.createMediaStreamDestination();
     this._mixedGain = this._actx.createGain();
     this._mixedGain.gain.value = 1.0;
@@ -387,11 +268,7 @@ export class VoiceSession extends EventTarget {
       const stillSpeaking = active || (now - a.lastActive) < SPEAKER_HOLD_MS;
       if (stillSpeaking !== a.speaking) { a.speaking = stillSpeaking; this._setSpeaking(key, stillSpeaking); }
       if (key === 'local') {
-        // Normalized 0-1 level for a live VAD meter UI, distinct from the speaking
-        // boolean above -- LEVEL_METER_CEILING is an empirical loud-speech RMS
-        // ceiling (raw RMS rarely exceeds ~0.3-0.4 even shouting close to a mic),
-        // not a physical constant; scaling against it keeps normal speech visible
-        // in the meter instead of pinned near the bottom of a 0-1 bar.
+
         const level = Math.max(0, Math.min(1, rms / LEVEL_METER_CEILING));
         this._emit('local-level', { level, rms });
       }
@@ -420,18 +297,11 @@ export class VoiceSession extends EventTarget {
     return false;
   }
 
-  // ────────────────────────────────────────────────────────────────────────
-  // Anti-overtalk transmit gate
-  // requestTransmit() — opens the mic if the channel is clear; otherwise starts
-  //   buffering into a local segment. releaseTransmit() finalizes / closes.
-  // The buffered segment is then published via per-peer data channel as the
-  // outbound queue to peers (they playback when their inbound channel drains).
-  // ────────────────────────────────────────────────────────────────────────
   requestTransmit() {
     if (!this.localStream) { this._emit('transmit-denied', { reason: 'no-microphone' }); return false; }
     this._wantsTransmit = true;
     if (!this.anyRemoteSpeaking()) { this.setMuted(false); this._emit('transmit', { mode: 'live' }); return true; }
-    // remote busy → buffer locally
+
     this._beginOutboundCapture();
     this._emit('transmit', { mode: 'queued' });
     return false;
@@ -440,21 +310,20 @@ export class VoiceSession extends EventTarget {
   releaseTransmit() {
     this._wantsTransmit = false;
     if (this._outboundRec) this._finalizeOutboundCapture();
-    // Only re-close the gate in PTT mode. In open-mic mode there is no "release"
-    // to fall back to — the mic stays live per pttMode's own semantics.
+
     if (this.pttMode && !this.muted) this.setMuted(true);
     this._emit('transmit', { mode: 'idle' });
   }
 
   _maybeAutoTransmit() {
     if (!this._wantsTransmit) return;
-    // If we're queued AND remote is now silent, flip to live and finalize the held segment
+
     if (this._outboundRec && !this.anyRemoteSpeaking()) {
       this._finalizeOutboundCapture();
       this.setMuted(false);
       this._emit('transmit', { mode: 'live' });
     }
-    // If we're live AND a remote starts speaking, fall back to queued mode
+
     else if (!this.muted && this.anyRemoteSpeaking()) {
       this.setMuted(true);
       this._beginOutboundCapture();
@@ -498,9 +367,6 @@ export class VoiceSession extends EventTarget {
     this._broadcastSegment(segment);
   }
 
-  // ────────────────────────────────────────────────────────────────────────
-  // Per-peer data channel — segment broadcast
-  // ────────────────────────────────────────────────────────────────────────
   _ensureDataChannel(peer, peerPubkey, isOfferer) {
     if (peer.dc) return;
     if (isOfferer) {
@@ -515,7 +381,7 @@ export class VoiceSession extends EventTarget {
 
   _wireDataChannel(dc, peer, peerPubkey) {
     dc.binaryType = 'arraybuffer';
-    peer._dcInbox = new Map(); // segId → { meta, parts:[], received:0, total:0 }
+    peer._dcInbox = new Map();
     dc.onmessage = (e) => this._dcOnMessage(e.data, peer, peerPubkey);
     dc.onopen = () => this._emit('dc-open', { peerPubkey });
     dc.onclose = () => this._emit('dc-close', { peerPubkey });
@@ -558,7 +424,7 @@ export class VoiceSession extends EventTarget {
       } else if (obj.type === 'seg-end') {
         const inbox = peer._dcInbox.get(obj.segId); if (!inbox) return;
         peer._dcInbox.delete(obj.segId);
-        if (inbox.received < inbox.meta.total) return; // dropped
+        if (inbox.received < inbox.meta.total) return;
         const total = inbox.parts.reduce((n, p) => n + (p?.length || 0), 0);
         const buf = new Uint8Array(total); let off = 0;
         for (const p of inbox.parts) { buf.set(p, off); off += p.length; }
@@ -567,18 +433,18 @@ export class VoiceSession extends EventTarget {
       }
       return;
     }
-    // binary chunk
+
     const view = new Uint8Array(data instanceof ArrayBuffer ? data : data.buffer);
     if (view.length < 6) return;
-    if (view[0] !== 0x57 || view[1] !== 0x57 || view[2] !== 0x31) return; // 'WW1'
-    if (view[3] !== 0x42) return; // 'B'
+    if (view[0] !== 0x57 || view[1] !== 0x57 || view[2] !== 0x31) return;
+    if (view[3] !== 0x42) return;
     let h = 4; let colons = 0; let metaEnd = -1;
     for (; h < view.length && h < 80; h++) {
       if (view[h] === 0x3A) { colons++; if (colons === 2) { metaEnd = h; break; } }
     }
     if (metaEnd < 0) return;
     const headerStr = new TextDecoder().decode(view.subarray(4, metaEnd));
-    // segId:idx/total
+
     const [segId, rest] = headerStr.split(':');
     const [idxStr, totalStr] = rest.split('/');
     const idx = +idxStr, total = +totalStr;
@@ -609,8 +475,6 @@ export class VoiceSession extends EventTarget {
     this.pool.publish(signed);
   }
 
-  // Estimated uplink in kbps: max(availableOutgoingBitrate over connected peers).
-  // This is the dominant signal for hub-fitness — hub fan-out is bounded by uplink.
   _estimateUplinkKbps() {
     let best = 0;
     for (const [, peer] of this.peers) {
@@ -621,8 +485,6 @@ export class VoiceSession extends EventTarget {
     return best;
   }
 
-  // Map peerPubkey → estimated kbps (most-recent stats sample). Pushed in heartbeat
-  // so other nodes can rank us as a hub candidate without their own stats poll.
   _capScores() {
     const out = {};
     for (const [pk, peer] of this.peers) {
@@ -631,9 +493,6 @@ export class VoiceSession extends EventTarget {
     return out;
   }
 
-  // Recent successful local public reflexive addresses (host:port) we've seen on
-  // candidate pairs. Other peers can synth peer-reflexive ICE candidates from these
-  // and start probing without waiting for STUN, dramatically cutting join time.
   _reflexiveAddrs() {
     return this._lastReflexive ? [this._lastReflexive] : [];
   }
@@ -647,14 +506,6 @@ export class VoiceSession extends EventTarget {
       (event) => this._onPresence(event));
   }
 
-  // bans.js publishes ban/timeout/kick as fire-and-forget kind:30078 events with
-  // no direct reach into an already-open WebRTC connection -- _maybeConnect's
-  // isBanned/isTimedOut gate only stops a *future* connection attempt. Without
-  // this, a moderation action taken against someone already in the call has zero
-  // effect until they happen to disconnect and try to rejoin. Mirrors bans.js's
-  // own 'updated' event (fired after every ban/unban/timeout/kick it observes)
-  // to close the live peer connection (or self-disconnect, for a kick/ban
-  // targeting this client) the moment the action lands.
   _subscribeBanEnforcement() {
     if (!this.bans || this._banEnforceHandler) return;
     this._banEnforceHandler = () => this._enforceBans();
@@ -707,15 +558,11 @@ export class VoiceSession extends EventTarget {
     this._emit('participants', { list: this.getParticipants() });
   }
 
-  // SFU-only topology: each node holds direct WebRTC PCs only to (a) the elected hub,
-  // (b) the warm backup, and (c) every peer if WE are the hub (fan-out). Everyone else
-  // is reachable indirectly via the hub's audio fan-out.
   _sfuShouldHaveConnectionTo(peerPubkey) {
-    if (this.sfu.hub === this.auth.pubkey) return true; // we are hub → connect to all
+    if (this.sfu.hub === this.auth.pubkey) return true;
     if (peerPubkey === this.sfu.hub) return true;
     if (peerPubkey === this.sfu.warmBackup) return true;
-    // Pre-election (no hub yet): connect to the lowest-pubkey peer as bootstrap so
-    // we have stats data to publish. Election will reshape immediately.
+
     if (!this.sfu.hub) return true;
     return false;
   }
@@ -729,7 +576,7 @@ export class VoiceSession extends EventTarget {
   _maybeConnect(peerPubkey) {
     if (!peerPubkey || peerPubkey === this.auth.pubkey || this.peers.has(peerPubkey)) return;
     if (this.bans && this.serverId && (this.bans.isBanned?.(this.serverId, peerPubkey) || this.bans.isTimedOut?.(this.serverId, peerPubkey) || this.bans.isKicked?.(this.serverId, peerPubkey))) return;
-    // Topology gate: only form WebRTC PCs the SFU layout calls for.
+
     if (!this._sfuShouldHaveConnectionTo(peerPubkey)) return;
     this._cancelReconnect(peerPubkey);
     const fsmActor = this.xstate.createActor(this.fsm.peerMachine);
@@ -737,16 +584,11 @@ export class VoiceSession extends EventTarget {
     fsmActor.start();
     const peer = { pc: null, audioEl: null, pendingCandidates: [], bufferedCandidates: [], iceTimer: null, disconnectTimer: null, connectTimer: null, failCount: 0, state: 'new', fsm: fsmActor, _stallInterval: null, remoteDescSet: false, trackEndedRestart: false };
     this.peers.set(peerPubkey, peer);
-    // Re-check hasTurnServer() here rather than trust setForceRelay()'s own warning
-    // alone -- this is the actual point of consequence (where iceTransportPolicy is
-    // set), so it stays correct even if forceRelay is ever set another way (directly
-    // via the constructor, a future setter) that bypasses setForceRelay()'s check.
+
     const relayRequested = this.forceRelay && hasTurnServer();
     const pc = this.createPeerConnection({ iceServers: ICE_SERVERS, bundlePolicy: 'max-bundle', iceCandidatePoolSize: 4, iceTransportPolicy: relayRequested ? 'relay' : 'all' });
     peer.pc = pc;
-    // Watchdog: if this pc hasn't reached 'connected' within CONNECT_TIMEOUT, force
-    // the same recovery path a real 'failed' event would take, instead of relying on
-    // a browser state transition that may never come for a peer stuck at 'new'.
+
     peer.connectTimer = setTimeout(() => {
       peer.connectTimer = null;
       if (pc.connectionState === 'connected') return;
@@ -758,9 +600,7 @@ export class VoiceSession extends EventTarget {
       else pc.addTransceiver('audio', { direction: 'recvonly' });
     }
     this._wirePeer(peer, peerPubkey, fsmActor, isOfferer);
-    // ICE/TURN offload via Nostr: if we already have a heartbeat-published
-    // reflexive addr for this peer, queue it to be added the moment remote
-    // description lands. Cuts join time vs. waiting for STUN re-gather.
+
     const known = this.sfu.reflexiveByPeer?.get(peerPubkey);
     if (known && known.length) {
       for (const r of known) {
@@ -786,9 +626,7 @@ export class VoiceSession extends EventTarget {
     pc.onicecandidate = (ev) => {
       if (!ev.candidate) return;
       const cand = ev.candidate.toJSON();
-      // Direct-path candidates (host = LAN, srflx = STUN-mapped, prflx = peer-reflexive) get published
-      // immediately so the remote side can begin probing direct pairs without waiting for the full
-      // gathering cycle. Relay candidates batch — they're a fallback and don't need millisecond latency.
+
       const cstr = cand.candidate || '';
       const isDirect = cstr.includes(' typ host') || cstr.includes(' typ srflx') || cstr.includes(' typ prflx');
       if (isDirect) {
@@ -809,11 +647,7 @@ export class VoiceSession extends EventTarget {
         this._applyAudioHints(pc);
         this._setConnectionQuality(peerPubkey, 'good');
       }
-      // Clear connectTimer here too: a pc can go straight 'new' -> 'disconnected' in some
-      // browsers without ever reporting 'connected'. Without this, connectTimer and the
-      // disconnectTimer armed below would both independently call _doIceRestart on the
-      // same peer -- a double-fire that double-increments failCount and can double-send
-      // ICE restart offers / double-schedule the close+backoff reconnect.
+
       if (pc.connectionState === 'disconnected') { if (peer.connectTimer) { clearTimeout(peer.connectTimer); peer.connectTimer = null; } fsmActor.send({ type: 'disconnect' }); peer.disconnectTimer = setTimeout(() => this._doIceRestart(peer, peerPubkey, fsmActor), DISCONNECT_GRACE); this._setConnectionQuality(peerPubkey, 'poor'); }
       if (pc.connectionState === 'failed') this._doIceRestart(peer, peerPubkey, fsmActor);
       if (pc.connectionState === 'closed') { this._closePeer(peerPubkey); if (this.sfu.hub === peerPubkey) this._sfuOnHubLost(); }
@@ -826,13 +660,6 @@ export class VoiceSession extends EventTarget {
     }
   }
 
-  // Real DTX (discontinuous transmission / silence suppression) and FEC
-  // (forward error correction) toggles. Neither is an RTCRtpEncodingParameters
-  // field in the actual WebRTC spec — both are negotiated per the Opus fmtp
-  // SDP line (`usedtx=1` / `useinbandfec=1`). This mutates the outgoing SDP's
-  // audio m-section fmtp lines for the Opus payload type(s) found via the SDP
-  // itself (matches "opus" case-insensitively, same as the codec-preference
-  // filter in _applyAudioHints), adding/removing each param independently.
   _mungeDtx(sdp) {
     if (!sdp) return sdp;
     const lines = sdp.split('\r\n');
@@ -859,14 +686,13 @@ export class VoiceSession extends EventTarget {
         if (!s.track || s.track.kind !== 'audio') return;
         const p = s.getParameters(); if (!p.encodings?.length) return;
         p.encodings[0].networkPriority = 'high';
-        // Opus bitrate ladder: real per-tier target set via setAudioQuality(),
-        // applied here through the actual RTCRtpSender.setParameters() call.
+
         p.encodings[0].maxBitrate = this._targetBitrate || OPUS_BITRATE_LADDER[DEFAULT_AUDIO_QUALITY];
         p.encodings[0].priority = 'high';
         s.setParameters(p).catch(() => {});
       });
       pc.getReceivers().forEach(r => { if (r.track?.kind !== 'audio') return; try { r.playoutDelayHint = 0.02; } catch {} });
-      // Munge SDP-level Opus params via setCodecPreferences when the transceiver supports it.
+
       pc.getTransceivers().forEach(t => {
         if (t.receiver?.track?.kind !== 'audio' && t.sender?.track?.kind !== 'audio') return;
         if (typeof RTCRtpSender === 'undefined' || !RTCRtpSender.getCapabilities) return;
@@ -894,10 +720,7 @@ export class VoiceSession extends EventTarget {
     this._setConnectionQuality(peerPubkey, 'poor');
     if (peer.failCount <= 1 && this.auth.pubkey > peerPubkey) {
       fsmActor.send({ type: 'restart' }); pc.restartIce();
-      // Re-arm the watchdog for the restarted attempt -- only the offerer retries in
-      // place (the answerer branch below closes+reschedules immediately, so there is
-      // no live peer/pc left to re-arm a timer against). If this restarted offer also
-      // goes unanswered, the same bounded fallback applies again.
+
       peer.connectTimer = setTimeout(() => {
         peer.connectTimer = null;
         if (pc.connectionState === 'connected') return;
@@ -938,11 +761,6 @@ export class VoiceSession extends EventTarget {
     }
   }
 
-  // participants is keyed by shortId ('nostr-' + first 12 hex chars of the
-  // full pubkey, see _handlePresence/line ~643), while every WebRTC/timer
-  // callback only has the full peerPubkey in scope -- bridge the two
-  // keyspaces here rather than inline at each call site. A no-op if the
-  // participant already left (shortId deleted) or was never a remote peer.
   _setConnectionQuality(peerPubkey, quality) {
     const shortId = 'nostr-' + peerPubkey.slice(0, 12);
     const p = this.participants.get(shortId);
@@ -977,9 +795,7 @@ export class VoiceSession extends EventTarget {
   _scheduleReconnect(pk, attempt) {
     const a = attempt || 0;
     if (a >= 6) {
-      // Retries genuinely exhausted -- distinct from 'peer-closed' (which also
-      // fires on a normal clean leave via _closePeer) so a consumer can tell
-      // "gave up after 6 attempts" apart from "they left the call".
+
       this._setConnectionQuality(pk, 'failed');
       this._emit('peer-connect-failed', { peerPubkey: pk, attempts: a });
       return;
@@ -989,21 +805,6 @@ export class VoiceSession extends EventTarget {
     this.retrySchedule[pk] = { attempt: a, timer };
   }
 
-  // ────────────────────────────────────────────────────────────────────────
-  // Always-SFU topology
-  //
-  // No mesh. Exactly one hub at a time, elected by the highest-uplink peer
-  // among everyone in the room. Election is driven entirely by Nostr-published
-  // heartbeats — every peer sees the same scores and computes the same winner
-  // deterministically, so there's no leader-election race. Tiebreaker: highest
-  // pubkey. The runner-up is held as a warm backup so hub failure → instant
-  // failover (sub-second) instead of full re-negotiation (~5 s).
-  //
-  // ICE/TURN offload to Nostr: each heartbeat publishes the local node's most
-  // recent successful public reflexive address. New joiners use that to synth
-  // peer-reflexive ICE candidates immediately, skipping their own STUN gather
-  // round-trip. Result: first audio in ~hundreds of ms instead of seconds.
-  // ────────────────────────────────────────────────────────────────────────
   _sfuStart() {
     this.sfu.actor = this.xstate.createActor(this.fsm.sfuMachine);
     this.sfu.actor.start();
@@ -1037,7 +838,7 @@ export class VoiceSession extends EventTarget {
           if (r.type === 'candidate-pair' && r.state === 'succeeded' && (r.nominated || r.selected)) {
             if (r.currentRoundTripTime != null) pairRtt = r.currentRoundTripTime;
             if (r.availableOutgoingBitrate != null) availOut = r.availableOutgoingBitrate;
-            // Capture the local end of the selected pair as our public reflexive addr.
+
             const localId = r.localCandidateId; if (localId) {
               const local = stats.get?.(localId); if (local && (local.candidateType === 'srflx' || local.candidateType === 'prflx' || local.candidateType === 'relay')) {
                 reflex = { addr: local.address || local.ip, port: local.port, type: local.candidateType, protocol: local.protocol };
@@ -1049,8 +850,7 @@ export class VoiceSession extends EventTarget {
           }
         });
         if (pairRtt != null) rttScores[pk] = Math.round(pairRtt * 1000);
-        // Per-peer capacity estimate — falls back to RTT/loss heuristic when
-        // availableOutgoingBitrate isn't exposed (Firefox, Safari sometimes).
+
         let capKbps = null;
         if (availOut != null && availOut > 0) capKbps = Math.round(availOut / 1000);
         else if (pairRtt != null) {
@@ -1072,13 +872,9 @@ export class VoiceSession extends EventTarget {
   }
 
   _sfuRankCandidates() {
-    // Score every known participant (including self). Higher = better hub.
-    //   capacity term — published uplinkKbps from heartbeats (or local stats for self)
-    //   rtt term       — inverse mean RTT, tiebreaker
-    //   coverage term  — how many peers we have data on (favours nodes already
-    //                    talking to many others, reduces reorg churn)
+
     const all = new Set([this.auth.pubkey, ...this.participants.keys()]);
-    // participants.keys() are shortIds; rebuild full pubkeys from peers + self.
+
     all.clear(); all.add(this.auth.pubkey);
     for (const pk of this.peers.keys()) all.add(pk);
     if (this.sfu.capacityMatrix) for (const pk of this.sfu.capacityMatrix.keys()) all.add(pk);
@@ -1086,7 +882,7 @@ export class VoiceSession extends EventTarget {
 
     const ranked = [];
     for (const pk of all) {
-      // Self-uplink: from local stats. Remote uplink: from their heartbeat (_self field).
+
       let uplink = 0;
       if (pk === this.auth.pubkey) uplink = this._estimateUplinkKbps();
       else { const cap = this.sfu.capacityMatrix?.get(pk); if (cap && typeof cap._self === 'number') uplink = cap._self; }
@@ -1098,16 +894,13 @@ export class VoiceSession extends EventTarget {
       const cap = this.sfu.capacityMatrix?.get(pk);
       const capCount = cap ? Object.keys(cap).filter(k => k !== '_self').length : 0;
 
-      // Score: uplink dominates (it's the bottleneck for hub fan-out).
-      // 1 kbps uplink = 1 point. RTT contributes up to 200 points (preferring <200 ms).
-      // Coverage contributes (rttCount + capCount) × 30.
       const rttTerm = rttCount ? Math.max(0, 200 - rttAvg) : 0;
       const coverageTerm = (rttCount + capCount) * 30;
       const score = uplink + rttTerm + coverageTerm;
 
       ranked.push({ pubkey: pk, score, uplink, rttAvg, capCount });
     }
-    // Tiebreak by pubkey for determinism across nodes.
+
     ranked.sort((a, b) => b.score - a.score || (a.pubkey > b.pubkey ? -1 : 1));
     return ranked;
   }
@@ -1118,8 +911,6 @@ export class VoiceSession extends EventTarget {
     const top = ranked[0];
     const runnerUp = ranked[1] || null;
 
-    // Hysteresis: keep incumbent unless challenger is meaningfully better
-    // AND we've held the current hub for at least HUB_HYSTERESIS_MS.
     const incumbent = this.sfu.hub;
     if (incumbent) {
       const incEntry = ranked.find(r => r.pubkey === incumbent);
@@ -1128,7 +919,7 @@ export class VoiceSession extends EventTarget {
         const rel = incEntry.score > 0 ? advantage / incEntry.score : Infinity;
         const recent = Date.now() - this.sfu.lastSwitch < HUB_HYSTERESIS_MS;
         if (top.pubkey === incumbent || rel < HUB_REL_ADVANTAGE || recent) {
-          // Even if we keep incumbent, refresh warm-backup choice.
+
           this.sfu.warmBackup = (runnerUp && runnerUp.pubkey !== incumbent) ? runnerUp.pubkey : null;
           this._sfuApplyTopology(incumbent);
           return;
@@ -1150,15 +941,9 @@ export class VoiceSession extends EventTarget {
     this._sfuApplyTopology(top.pubkey);
   }
 
-  // Reconcile the open WebRTC PCs with the elected topology.
-  // - If we are hub: keep PCs to every participant, open new ones for missing peers.
-  // - Else: keep PCs only to hub + warm backup.
   _sfuApplyTopology(hubPk) {
     if (hubPk === this.auth.pubkey) {
-      // Hub connects to every known participant. Build the pubkey set from
-      // every available source — pubkeyByShortId (presence-derived), peers,
-      // capacityMatrix, rttMatrix — because at the moment of the very first
-      // election the matrices may not be populated yet.
+
       const known = new Set();
       if (this.sfu.pubkeyByShortId) for (const pk of this.sfu.pubkeyByShortId.values()) known.add(pk);
       for (const pk of this.peers.keys()) known.add(pk);
@@ -1170,7 +955,7 @@ export class VoiceSession extends EventTarget {
       }
       return;
     }
-    // Non-hub: drop everyone except hub + warm backup.
+
     for (const pk of Array.from(this.peers.keys())) {
       if (pk === hubPk) continue;
       if (pk === this.sfu.warmBackup) continue;
@@ -1181,9 +966,7 @@ export class VoiceSession extends EventTarget {
   }
 
   _sfuBecomeHub() {
-    // Fan out remote audio receivers to all other peer senders via replaceTrack.
-    // This zero-copy forward is the heart of SFU — no transcode, no re-encode,
-    // just packet redirection at the RTCPeerConnection layer.
+
     for (const [srcPk, srcPeer] of this.peers) {
       if (!srcPeer.pc?.getReceivers) continue;
       srcPeer.pc.getReceivers().forEach(recv => {
@@ -1197,8 +980,6 @@ export class VoiceSession extends EventTarget {
     }
   }
 
-  // Graceful handoff: open new hub PC, wait briefly for first audio, then drop
-  // old PCs. The warm backup is preserved through the transition for failover.
   async _sfuRouteToHub(hubPk, previousHub) {
     if (!this.peers.has(hubPk)) this._maybeConnect(hubPk);
     const hubPeer = this.peers.get(hubPk);
@@ -1215,13 +996,12 @@ export class VoiceSession extends EventTarget {
       }, 100);
     });
     if (!ok && previousHub && previousHub !== hubPk && this.participants.size) {
-      // Roll back: new hub didn't deliver audio. Keep old hub.
+
       this.sfu.hub = previousHub;
       if (!this.peers.has(previousHub)) this._maybeConnect(previousHub);
     }
   }
 
-  // Hub-loss handler: wired from peer connectionstatechange when current hub PC dies.
   _sfuOnHubLost() {
     if (!this.sfu.hub) return;
     const hubPeer = this.peers.get(this.sfu.hub);

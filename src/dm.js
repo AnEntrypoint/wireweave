@@ -12,12 +12,6 @@ export class DM extends EventTarget {
         this.subId = null;
     }
 
-    // NIP-17: send is a real kind:14 rumor, gift-wrapped (NIP-59) once per
-    // recipient and once more for ourselves (self-copy), each wrap signed by
-    // a fresh single-use random key so no relay observer can attribute the
-    // wrap's outer envelope to either the sender or the recipient — only the
-    // holder of the recipient's (or our own) private key can even see it's a
-    // DM at all, let alone read it or learn who sent it.
     async send(peerPubkey, plaintext) {
         if (!this.auth.privkey) throw new Error('DM: privkey required (extension signing not supported for nip17)');
         const rumor = {
@@ -33,18 +27,12 @@ export class DM extends EventTarget {
         return wrapForPeer;
     }
 
-    // Unwrap a gift-wrap (kind 1059) down to its rumor and return the
-    // plaintext. Requires our own privkey — only the wrap's addressed
-    // recipient (the 'p' tag on the outer event) can unwrap it.
     decrypt(wrap) {
         if (!this.auth.privkey) throw new Error('DM: privkey required (extension signing not supported for nip17)');
         const rumor = this.NT.nip59.unwrapEvent(wrap, this.auth.privkey);
         return rumor.content;
     }
 
-    // Same as decrypt() but returns the full unwrapped rumor (sender pubkey,
-    // created_at, tags) alongside the plaintext, for callers that need the
-    // real (rumor-level) sender identity rather than the wrap's throwaway key.
     unwrap(wrap) {
         if (!this.auth.privkey) throw new Error('DM: privkey required (extension signing not supported for nip17)');
         return this.NT.nip59.unwrapEvent(wrap, this.auth.privkey);

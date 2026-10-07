@@ -1,7 +1,5 @@
-// NIP-51 kind:10000 personal mute list -- each user's own private curation,
-// independent of server-level admin bans (bans.js). No backend, no relay
-// infra beyond an addressable replaceable event the user's own client
-// publishes and reads back on every device they log into.
+
+
 export class Mutes extends EventTarget {
   constructor({ relayPool, auth }) {
     super();
@@ -37,15 +35,10 @@ export class Mutes extends EventTarget {
     this.pool.publish(signed);
   }
 
-  // Loads the user's own most-recent kind:10000 list (a replaceable event —
-  // relays return only the latest per author+kind, but subscribe across
-  // several regardless in case an older relay doesn't dedupe server-side).
   load() {
     if (this._loaded) return;
     if (!this.auth.pubkey) {
-      // Not logged in yet (e.g. called at boot before storage-restored auth
-      // resolves) -- retry once login actually happens instead of silently
-      // never loading the mute list for the rest of the session.
+
       this.auth.addEventListener('login', () => this.load(), { once: true });
       return;
     }

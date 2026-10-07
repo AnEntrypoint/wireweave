@@ -57,7 +57,7 @@ api:
     - { kind: "cmd", text: "    a.srcObject = stream; a.autoplay = true;" }
     - { kind: "cmd", text: "    document.body.appendChild(a); peer.audioEl = a;" }
     - { kind: "cmd", text: "  }," }
-    - { kind: "cmd", text: "  onVideoTrack: ({ peerPubkey, stream }) => { /* attach */ }" }
+    - { kind: "cmd", text: "  onVideoTrack: ({ peerPubkey, stream }) => console.log({ peerPubkey, stream })" }
     - { kind: "cmd", text: "});" }
     - { kind: "cmd", text: "await voice.connect('general-voice', { displayName: 'you' });" }
     - { kind: "cmd", text: "voice.toggleMic(); voice.toggleDeafen();" }

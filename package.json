@@ -26,7 +26,10 @@
     "./pages": "./src/pages.js",
     "./debug": "./src/debug.js",
     "./dm": "./src/dm.js",
-    "./ephemeral-relay": "./src/ephemeral-relay.js"
+    "./ephemeral-relay": "./src/ephemeral-relay.js",
+    "./feedback": "./src/feedback.js",
+    "./feedback-form": "./src/feedback-form.js",
+    "./feedback-tools": "./src/feedback-tools.js"
   },
   "scripts": {
     "test": "node test.js",
@@ -54,7 +57,12 @@
     "nostr-tools": "^2.7.0"
   },
   "devDependencies": {
-    "nostr-tools": "^2.25.2",
+    "nostr-tools": "^2.25.2"
+  },
+  "bin": {
+    "wireweave-feedback": "./src/feedback-cli.js"
+  },
+  "dependencies": {
     "ws": "^8.21.1"
   }
 }
