@@ -18,5 +18,5 @@ dist/
 .gm/browser-chrome-profile-*/
 .gm/browser-config.json
 .gm/feedback-*
-.gm/claim-audit-fired
+.gm/*-fired
 .gm/.gm-continue-count
