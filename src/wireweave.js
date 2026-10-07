@@ -15,6 +15,7 @@ import { createDM } from './dm.js';
 import { createDataSession } from './data.js';
 import { createReactions } from './reactions.js';
 import { createMutes } from './mutes.js';
+import { createUnread } from './unread.js';
 import { createForum } from './forum.js';
 import { register } from './debug.js';
 import { createFeedback } from './feedback.js';
@@ -45,6 +46,7 @@ export const createWireweave = ({
   const reactions = createReactions({ relayPool: pool, auth });
   const mutes = createMutes({ relayPool: pool, auth });
   mutes.load();
+  const unread = createUnread({ relayPool: pool, auth, storage });
   const forum = createForum({ relayPool: pool, auth });
 
   let currentChannelId = null;
@@ -75,8 +77,10 @@ export const createWireweave = ({
         });
       }
       const firstText = channels.channels.find(c => c.type === 'text');
+      unread.start(serverId, channels.channels);
       if (firstText) {
         currentChannelId = firstText.id;
+        unread.setActive(firstText.id);
         chat.loadHistory(firstText.id);
       }
     }
@@ -89,7 +93,7 @@ export const createWireweave = ({
     return voice;
   };
 
-  const setCurrentChannel = (id) => { currentChannelId = id; return id ? chat.loadHistory(id) : Promise.resolve(); };
+  const setCurrentChannel = (id) => { currentChannelId = id; unread.setActive(id); return id ? chat.loadHistory(id) : Promise.resolve(); };
 
 
 
@@ -116,7 +120,7 @@ export const createWireweave = ({
   };
 
   const api = {
-    pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat, reactions, mutes, forum,
+    pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat, reactions, mutes, unread, forum,
     get voice() { return voice; },
     ensureVoice,
     get dm() { return dm; },
