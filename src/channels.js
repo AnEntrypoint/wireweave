@@ -17,6 +17,8 @@ export class Channels extends EventTarget {
     if (!relayPool || !auth) throw new Error('Channels: relayPool + auth required');
     this.pool = relayPool; this.auth = auth;
     this.serverId = ''; this.channels = []; this.categories = [];
+    this.loaded = false;
+    this._known = new Map();
   }
 
   isOwner() { return !!(this.auth.pubkey && this.serverId && this.auth.pubkey === this.serverId.split(':')[0]); }
@@ -24,7 +26,10 @@ export class Channels extends EventTarget {
   load(serverId, onReady) {
     if (this.serverId) this.pool.unsubscribe('channels-' + this.serverId);
     this.serverId = serverId;
-    this.channels = []; this.categories = [];
+    const known = this._known.get(serverId);
+    this.channels = known ? known.channels.slice() : [];
+    this.categories = known ? known.categories.slice() : [];
+    this.loaded = !!known;
     const ownerPubkey = serverId.split(':')[0];
     const dTag = dtag('channels', serverId);
     this.pool.subscribe('channels-' + serverId,
@@ -38,6 +43,8 @@ export class Channels extends EventTarget {
           if (!data || typeof data !== 'object' || !Array.isArray(data.channels) || !Array.isArray(data.categories)) return;
           this.channels = data.channels;
           this.categories = data.categories;
+          this.loaded = true;
+          this._remember();
           this._emit('updated', { channels: this.channels, categories: this.categories });
         } catch {}
       },
@@ -47,11 +54,15 @@ export class Channels extends EventTarget {
       });
   }
 
+  _remember() {
+    if (!this.serverId) return;
+    this._known.set(this.serverId, { channels: this.channels.slice(), categories: this.categories.slice() });
+  }
+
   _setDefaults() {
     this.channels = DEFAULT_CHANNELS.map(c => ({ ...c }));
     this.categories = DEFAULT_CATEGORIES.map(c => ({ ...c }));
-    this._emit('updated', { channels: this.channels, categories: this.categories });
-    if (this.isOwner()) this._publish().catch(() => {});
+    this._emit('updated', { channels: this.channels, categories: this.categories, provisional: !this.loaded });
   }
 
   async _publish() {
@@ -61,6 +72,7 @@ export class Channels extends EventTarget {
       tags: [['d', dtag('channels', this.serverId)]],
       content: JSON.stringify({ channels: this.channels, categories: this.categories })
     });
+    this._remember();
     this.pool.publish(signed);
   }
 

@@ -1,3 +1,7 @@
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+const mb = (bytes) => (bytes / (1024 * 1024)).toFixed(1);
+
 const BLOSSOM_SERVERS = [
   'https://blossom.nostr.build',
   'https://files.sovbit.host',
@@ -102,7 +106,7 @@ export class Media {
   extractUrls(text) { return text ? (text.match(/https?:\/\/[^\s<>"]+/g) || []) : []; }
 
   async sendMedia(file, { channelId, serverId }) {
-    if (file.size > 20 * 1024 * 1024) throw new Error('file too large (max 20MB)');
+    if (file.size > MAX_UPLOAD_BYTES) throw new Error('file is ' + mb(file.size) + ' MB — the limit is ' + mb(MAX_UPLOAD_BYTES) + ' MB');
     const result = await this.upload(file);
     const chanHex = await hexChannelId(channelId, serverId);
     const imetaTag = ['imeta', 'url ' + result.url, 'm ' + result.type];

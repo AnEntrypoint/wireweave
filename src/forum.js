@@ -3,6 +3,10 @@ const hexChannelId = async (channelId, serverId) => {
   return Array.from(new Uint8Array(h)).map((b) => b.toString(16).padStart(2, '0')).join('');
 };
 
+const FORUM_TAG_PREFIX = 'zellous-forum:';
+
+const forumAddress = (channelId, serverId) => FORUM_TAG_PREFIX + (serverId || 'default') + ':' + channelId;
+
 export class Forum extends EventTarget {
   constructor({ relayPool, auth }) {
     super();
@@ -10,18 +14,32 @@ export class Forum extends EventTarget {
     this.pool = relayPool; this.auth = auth;
     this.posts = new Map();
     this.replies = new Map();
+    this.scopes = new Map();
     this.activeChannelId = null;
     this.activePostId = null;
+  }
+
+  async _scope(channelId, serverId) {
+    const s = { hex: await hexChannelId(channelId, serverId), addr: forumAddress(channelId, serverId) };
+    this.scopes.set(channelId, s);
+    return s;
+  }
+
+  _matchesScope(event, scope) {
+    const tags = event.tags || [];
+    const addr = tags.find((t) => t[0] === 'a' && typeof t[1] === 'string' && t[1].startsWith(FORUM_TAG_PREFIX));
+    if (addr) return addr[1] === scope.addr;
+    return tags.some((t) => t[0] === 'e' && t[1] === scope.hex);
   }
 
   async createPost(channelId, serverId, title, content) {
     if (!this.auth.isLoggedIn()) throw new Error('Not logged in');
     const trimmedTitle = (title || '').trim();
     if (!trimmedTitle) throw new Error('Post title cannot be empty');
-    const chanHex = await hexChannelId(channelId, serverId);
+    const scope = await this._scope(channelId, serverId);
     const signed = await this.auth.sign({
       kind: 11, created_at: Math.floor(Date.now() / 1000),
-      tags: [['e', chanHex, '', 'root'], ['title', trimmedTitle]],
+      tags: [['e', scope.hex, '', 'root'], ['a', scope.addr], ['t', 'zellous'], ['title', trimmedTitle]],
       content: (content || '').trim()
     });
     this.pool.publish(signed);
@@ -60,9 +78,12 @@ export class Forum extends EventTarget {
     if (this.activeChannelId) this.pool.unsubscribe('forum-' + this.activeChannelId);
     this.activeChannelId = channelId;
     if (!this.posts.has(channelId)) this.posts.set(channelId, new Map());
-    const chanHex = await hexChannelId(channelId, serverId);
+    const scope = await this._scope(channelId, serverId);
     this.pool.subscribe('forum-' + channelId,
-      [{ kinds: [11], '#e': [chanHex], limit: 100 }],
+      [
+        { kinds: [11], '#e': [scope.hex], limit: 100 },
+        { kinds: [11], '#a': [scope.addr], limit: 100 }
+      ],
       (ev) => this._applyPost(channelId, ev),
       () => this._emitList(channelId));
   }
@@ -78,6 +99,8 @@ export class Forum extends EventTarget {
 
   _applyPost(channelId, event) {
     if (!this.posts.has(channelId)) this.posts.set(channelId, new Map());
+    const scope = this.scopes.get(channelId);
+    if (scope && !this._matchesScope(event, scope)) return;
     const m = this.posts.get(channelId);
     const titleTag = (event.tags || []).find((t) => t[0] === 'title');
     m.set(event.id, {
