@@ -9,7 +9,7 @@ export class Roles extends EventTarget {
     this.subs = new Map();
   }
 
-  _creatorOf(serverId) { return serverId ? serverId.split(':')[0] : null; }
+  _creatorOf(serverId) { return serverId ? serverId.split(':')[0].toLowerCase() : null; }
 
   isOwner(serverId) { return !!this.auth.pubkey && this._creatorOf(serverId) === this.auth.pubkey; }
   isAdmin(serverId) { if (this.isOwner(serverId)) return true; const r = this.store.get(serverId); return !!(r?.admins || []).includes(this.auth.pubkey); }

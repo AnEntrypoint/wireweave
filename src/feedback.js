@@ -96,7 +96,7 @@ export class Feedback extends EventTarget {
       throw new Error('Feedback: relayPool with event verification and publish acknowledgements required');
     }
     this.serverId = textField(serverId, 'serverId', 512, true);
-    this.creator = this.serverId.split(':')[0];
+    this.creator = this.serverId.split(':')[0].toLowerCase();
     if (!HEX_ID.test(this.creator)) throw new Error('Feedback: serverId must start with its creator public key');
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000) throw new Error('Feedback: invalid timeoutMs');
     this.pool = relayPool;

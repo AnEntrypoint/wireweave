@@ -131,7 +131,7 @@ export class Bans extends EventTarget {
   subscribe(serverId) {
     if (this.subs.has(serverId)) return;
     if (!serverId) return;
-    const creator = serverId.split(':')[0];
+    const creator = serverId.split(':')[0].toLowerCase();
     if (!creator) return;
     const subId = 'bans-' + serverId;
     this.subs.set(serverId, subId);

@@ -105,7 +105,7 @@ export class Chat extends EventTarget {
     const collected = [];
     this.pool.subscribe('chat-' + channelId,
       [{ kinds: [42], '#e': [chanHex], limit: 50 }],
-      (ev) => { if (!this._isBlocked(serverId, ev.pubkey) && !this.deletedIds.has(ev.id)) collected.push(this._eventToMsg(ev)); },
+      (ev) => { if ((ev.tags || []).some(t => t[0] === 'e' && t[1] === chanHex) && !this._isBlocked(serverId, ev.pubkey) && !this.deletedIds.has(ev.id)) collected.push(this._eventToMsg(ev)); },
       () => {
         if (this.activeChannelId !== channelId) return;
         collected.sort((a, b) => a.timestamp - b.timestamp);
@@ -114,7 +114,7 @@ export class Chat extends EventTarget {
       });
     this.pool.subscribe('chat-live-' + channelId,
       [{ kinds: [42], '#e': [chanHex], since: Math.floor(Date.now() / 1000) }],
-      (ev) => { if (!this._isBlocked(serverId, ev.pubkey) && !this.deletedIds.has(ev.id)) this._addMessage(this._eventToMsg(ev)); });
+      (ev) => { if ((ev.tags || []).some(t => t[0] === 'e' && t[1] === chanHex) && !this._isBlocked(serverId, ev.pubkey) && !this.deletedIds.has(ev.id)) this._addMessage(this._eventToMsg(ev)); });
 
     this.pool.subscribe('chat-deletions-' + channelId,
       [{ kinds: [5], since: Math.floor(Date.now() / 1000) - DELETION_LOOKBACK_S, limit: DELETION_LIMIT }],

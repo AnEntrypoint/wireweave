@@ -21,7 +21,7 @@ export class Channels extends EventTarget {
     this._known = new Map();
   }
 
-  isOwner() { return !!(this.auth.pubkey && this.serverId && this.auth.pubkey === this.serverId.split(':')[0]); }
+  isOwner() { return !!(this.auth.pubkey && this.serverId && this.auth.pubkey === this.serverId.split(':')[0].toLowerCase()); }
 
   load(serverId, onReady) {
     if (this.serverId) this.pool.unsubscribe('channels-' + this.serverId);
@@ -30,7 +30,7 @@ export class Channels extends EventTarget {
     this.channels = known ? known.channels.slice() : [];
     this.categories = known ? known.categories.slice() : [];
     this.loaded = !!known;
-    const ownerPubkey = serverId.split(':')[0];
+    const ownerPubkey = serverId.split(':')[0].toLowerCase();
     const dTag = dtag('channels', serverId);
     let channelsTs = 0;
     this.pool.subscribe('channels-' + serverId,
