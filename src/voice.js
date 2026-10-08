@@ -123,6 +123,13 @@ export class VoiceSession extends EventTarget {
     this.actor.start();
   }
 
+  _releaseLocalMedia() {
+    if (this._localListenTrack) { this._localListenTrack.stop(); this._localListenTrack = null; }
+    if (this.localStream) { this.localStream.getTracks().forEach(t => t.stop()); this.localStream = null; }
+    if (this._activeAnalyzers) { for (const k of Array.from(this._activeAnalyzers.keys())) this._detachAnalyzer(k); }
+    if (this.roomId) { this.pool.unsubscribe('voice-presence-' + this.roomId); this.pool.unsubscribe('voice-signals-' + this.roomId); }
+  }
+
   async connect(channelName, { displayName = 'Guest' } = {}) {
     if (!this.actor) this._initActor();
     if (!this.actor.getSnapshot().can({ type: 'connect' })) await this.disconnect();
@@ -171,7 +178,10 @@ export class VoiceSession extends EventTarget {
       this._emit('connected', { roomId: this.roomId, channelName });
     } catch (e) {
       if (epoch !== this._epoch) return;
-      this.actor.send({ type: 'fail' });
+      this._releaseLocalMedia();
+      const snap = () => this.actor.getSnapshot();
+      if (snap().can({ type: 'fail' })) this.actor.send({ type: 'fail' });
+      else if (snap().can({ type: 'disconnect' })) { this.actor.send({ type: 'disconnect' }); if (snap().can({ type: 'done' })) this.actor.send({ type: 'done' }); }
       this._emit('error', { message: 'connect failed: ' + e.message });
       throw e;
     }

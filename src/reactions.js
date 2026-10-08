@@ -1,12 +1,14 @@
 
 
+const REACTION_TARGET_CAP = 500;
+const REACTION_RESUB_DEBOUNCE_MS = 250;
+
 export class Reactions extends EventTarget {
   constructor({ relayPool, auth }) {
     super();
     if (!relayPool || !auth) throw new Error('Reactions: relayPool + auth required');
     this.pool = relayPool; this.auth = auth;
     this.byTarget = new Map();
-    this.subs = new Map();
   }
 
   async react(targetEventId, targetAuthorPubkey, content = '+') {
@@ -43,11 +45,22 @@ export class Reactions extends EventTarget {
   }
 
   subscribeMany(targetEventIds) {
-    const fresh = targetEventIds.filter(id => id && !this.subs.has(id));
-    if (!fresh.length) return;
-    fresh.forEach(id => this.subs.set(id, true));
-    const subId = 'reactions-' + fresh[0] + '-' + fresh.length;
-    this.pool.subscribe(subId, [{ kinds: [7], '#e': fresh }], (event) => this._applyReaction(event));
+    this.ids = this.ids || new Set();
+    let added = false;
+    for (const id of targetEventIds) if (id && !this.ids.has(id)) { this.ids.add(id); added = true; }
+    while (this.ids.size > REACTION_TARGET_CAP) this.ids.delete(this.ids.values().next().value);
+    if (!added) return;
+    clearTimeout(this._resubTimer);
+    this._resubTimer = setTimeout(() => this._resubscribe(), REACTION_RESUB_DEBOUNCE_MS);
+  }
+
+  _resubscribe() {
+    if (this._subId) this.pool.unsubscribe(this._subId);
+    this._subId = null;
+    const ids = Array.from(this.ids);
+    if (!ids.length) return;
+    this._subId = 'reactions-live';
+    this.pool.subscribe(this._subId, [{ kinds: [7], '#e': ids }], (event) => this._applyReaction(event));
   }
 
   _applyReaction(event, { local = false } = {}) {
