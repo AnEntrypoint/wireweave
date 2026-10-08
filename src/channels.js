@@ -83,13 +83,13 @@ export class Channels extends EventTarget {
     catch (e) { this.channels = channels; this.categories = categories; this._emit('updated', { channels, categories }); throw e; }
   }
 
-  async create(name, type = 'text', categoryId = 'general') {
+  async create(name, type = 'text', categoryId = 'general', extra = {}) {
     if (!this.isOwner()) throw new Error('owner only');
     const prev = [this.channels, this.categories];
     name = (name || '').trim();
     if (!name) throw new Error('channel name cannot be empty');
     if (this.channels.some(c => c.name === name)) throw new Error('a channel with that name already exists');
-    const created = { id: 'ch-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, type, categoryId, position: this.channels.length };
+    const created = { id: 'ch-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, type, categoryId, position: this.channels.length, ...(extra.parentChannelId ? { parentChannelId: extra.parentChannelId } : {}) };
     this.channels = [...this.channels, created];
     await this._publishOrRevert(prev);
     this._emit('updated', { channels: this.channels, categories: this.categories });
