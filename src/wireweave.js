@@ -57,6 +57,7 @@ export const createWireweave = ({
       channelType: channels.channels.find((c) => c.id === currentChannelId)?.type || null
     }),
     isAdmin: (sid) => roles.isAdmin(sid),
+    isRoleOf: (sid, pk) => roles.getRole(sid, pk),
     bans, mutes,
     getEventHash: nostrTools.getEventHash
   });

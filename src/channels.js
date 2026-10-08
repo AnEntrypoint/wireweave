@@ -78,70 +78,84 @@ export class Channels extends EventTarget {
     this.pool.publish(signed);
   }
 
+  async _publishOrRevert([channels, categories]) {
+    try { await this._publish(); }
+    catch (e) { this.channels = channels; this.categories = categories; this._emit('updated', { channels, categories }); throw e; }
+  }
+
   async create(name, type = 'text', categoryId = 'general') {
     if (!this.isOwner()) throw new Error('owner only');
+    const prev = [this.channels, this.categories];
     name = (name || '').trim();
     if (!name) throw new Error('channel name cannot be empty');
     if (this.channels.some(c => c.name === name)) throw new Error('a channel with that name already exists');
     const created = { id: 'ch-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, type, categoryId, position: this.channels.length };
     this.channels = [...this.channels, created];
-    await this._publish();
+    await this._publishOrRevert(prev);
     this._emit('updated', { channels: this.channels, categories: this.categories });
     return created;
   }
 
   async rename(id, name) {
     if (!this.isOwner()) throw new Error('owner only');
+    const prev = [this.channels, this.categories];
     name = (name || '').trim();
     if (!name) throw new Error('channel name cannot be empty');
     if (this.channels.some(c => c.id !== id && c.name === name)) throw new Error('a channel with that name already exists');
     this.channels = this.channels.map(c => c.id === id ? { ...c, name } : c);
-    await this._publish(); this._emit('updated', { channels: this.channels, categories: this.categories });
+    await this._publishOrRevert(prev); this._emit('updated', { channels: this.channels, categories: this.categories });
   }
 
   async update(id, patch) {
     if (!this.isOwner()) throw new Error('owner only');
+    const prev = [this.channels, this.categories];
     if (!patch || typeof patch !== 'object') return;
     this.channels = this.channels.map(c => c.id === id ? { ...c, ...patch } : c);
-    await this._publish(); this._emit('updated', { channels: this.channels, categories: this.categories });
+    await this._publishOrRevert(prev); this._emit('updated', { channels: this.channels, categories: this.categories });
   }
 
   async remove(id) {
     if (!this.isOwner()) throw new Error('owner only');
+    const prev = [this.channels, this.categories];
     if (this.channels.length <= 1) throw new Error('cannot remove the last channel');
     this.channels = this.channels.filter(c => c.id !== id);
-    await this._publish(); this._emit('updated', { channels: this.channels, categories: this.categories });
+    await this._publishOrRevert(prev); this._emit('updated', { channels: this.channels, categories: this.categories });
   }
 
   async createCategory(name) {
     if (!this.isOwner()) throw new Error('owner only');
+    const prev = [this.channels, this.categories];
     this.categories = [...this.categories, { id: 'cat-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, position: this.categories.length }];
-    await this._publish(); this._emit('updated', { channels: this.channels, categories: this.categories });
+    await this._publishOrRevert(prev); this._emit('updated', { channels: this.channels, categories: this.categories });
   }
 
   async renameCategory(id, name) {
     if (!this.isOwner()) throw new Error('owner only');
+    const prev = [this.channels, this.categories];
     this.categories = this.categories.map(c => c.id === id ? { ...c, name } : c);
-    await this._publish(); this._emit('updated', { channels: this.channels, categories: this.categories });
+    await this._publishOrRevert(prev); this._emit('updated', { channels: this.channels, categories: this.categories });
   }
 
   async deleteCategory(id) {
     if (!this.isOwner()) throw new Error('owner only');
+    const prev = [this.channels, this.categories];
     this.categories = this.categories.filter(c => c.id !== id);
     this.channels = this.channels.map(c => c.categoryId === id ? { ...c, categoryId: null } : c);
-    await this._publish(); this._emit('updated', { channels: this.channels, categories: this.categories });
+    await this._publishOrRevert(prev); this._emit('updated', { channels: this.channels, categories: this.categories });
   }
 
   async reorder(catId, ids) {
     if (!this.isOwner()) throw new Error('owner only');
+    const prev = [this.channels, this.categories];
     ids.forEach((chId, idx) => { this.channels = this.channels.map(c => c.id === chId ? { ...c, position: idx, categoryId: catId } : c); });
-    await this._publish(); this._emit('updated', { channels: this.channels, categories: this.categories });
+    await this._publishOrRevert(prev); this._emit('updated', { channels: this.channels, categories: this.categories });
   }
 
   async reorderCategories(ids) {
     if (!this.isOwner()) throw new Error('owner only');
+    const prev = [this.channels, this.categories];
     ids.forEach((catId, idx) => { this.categories = this.categories.map(c => c.id === catId ? { ...c, position: idx } : c); });
-    await this._publish(); this._emit('updated', { channels: this.channels, categories: this.categories });
+    await this._publishOrRevert(prev); this._emit('updated', { channels: this.channels, categories: this.categories });
   }
 
   _emit(t, d) { this.dispatchEvent(new CustomEvent(t, { detail: d })); }

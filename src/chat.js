@@ -28,11 +28,11 @@ const minePow = (getEventHash, template, difficulty, maxIterations = 2_000_000) 
 };
 
 export class Chat extends EventTarget {
-  constructor({ relayPool, auth, getChannelContext = () => ({ channelId: null, serverId: '' }), isAdmin = () => false, bans = null, mutes = null, getEventHash = null, powDifficulty = 0 }) {
+  constructor({ relayPool, auth, getChannelContext = () => ({ channelId: null, serverId: '' }), isAdmin = () => false, isRoleOf = () => 'member', bans = null, mutes = null, getEventHash = null, powDifficulty = 0 }) {
     super();
     if (!relayPool || !auth) throw new Error('Chat: relayPool + auth required');
     this.pool = relayPool; this.auth = auth;
-    this.getChannelContext = getChannelContext; this.isAdmin = isAdmin;
+    this.getChannelContext = getChannelContext; this.isAdmin = isAdmin; this.isRoleOf = isRoleOf;
 
     this.bans = bans; this.mutes = mutes;
 
@@ -123,7 +123,7 @@ export class Chat extends EventTarget {
         if (!targetId) return;
         const target = this.messages.find((m) => m.id === targetId);
         if (!target) { (this._pendingDeletes ||= new Map()).set(targetId, ev.pubkey); return; }
-        if (target.userId !== ev.pubkey && !this.isAdmin(serverId)) return;
+        if (target.userId !== ev.pubkey && !['owner', 'admin', 'moderator'].includes(this.isRoleOf(serverId, ev.pubkey))) return;
         this.deletedIds.add(targetId);
         if (target) { this.messages = this.messages.filter((m) => m.id !== targetId); this._emit('messages', { list: this.messages }); }
       });
