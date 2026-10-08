@@ -27,6 +27,8 @@ const minePow = (getEventHash, template, difficulty, maxIterations = 2_000_000) 
   return template;
 };
 
+const PROFILE_MISS_TTL_MS = 10 * 60 * 1000;
+
 export class Chat extends EventTarget {
   constructor({ relayPool, auth, getChannelContext = () => ({ channelId: null, serverId: '' }), isAdmin = () => false, isRoleOf = () => 'member', bans = null, mutes = null, getEventHash = null, powDifficulty = 0 }) {
     super();
@@ -180,6 +182,8 @@ export class Chat extends EventTarget {
 
   _fetchProfile(pubkey) {
     if (this.fetching.has(pubkey)) return;
+    const missedAt = this._profileMiss?.get(pubkey);
+    if (missedAt !== undefined && Date.now() - missedAt < PROFILE_MISS_TTL_MS) return;
     this.fetching.add(pubkey);
     this.pool.subscribe('profile-' + pubkey,
       [{ kinds: [0], authors: [pubkey] }],
@@ -189,7 +193,11 @@ export class Chat extends EventTarget {
         (this._profileEvents ||= new Map()).set(pubkey, event.created_at);
         try { this.profiles.set(pubkey, JSON.parse(event.content)); this._emit('profile', { pubkey, profile: this.profiles.get(pubkey) }); } catch {}
       },
-      () => { this.fetching.delete(pubkey); });
+      () => {
+        this.fetching.delete(pubkey);
+        this.pool.unsubscribe('profile-' + pubkey);
+        if (!this.profiles.has(pubkey)) (this._profileMiss ||= new Map()).set(pubkey, Date.now());
+      });
   }
 
   updateProfile(pubkey, profile) { this.profiles.set(pubkey, profile); this._emit('profile', { pubkey, profile }); }
