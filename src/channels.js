@@ -32,10 +32,12 @@ export class Channels extends EventTarget {
     this.loaded = !!known;
     const ownerPubkey = serverId.split(':')[0];
     const dTag = dtag('channels', serverId);
+    let channelsTs = 0;
     this.pool.subscribe('channels-' + serverId,
       [{ kinds: [30078], authors: [ownerPubkey], '#d': [dTag] }],
       (event) => {
-        if (event.pubkey !== ownerPubkey) return;
+        if (event.pubkey !== ownerPubkey || event.created_at < channelsTs) return;
+        channelsTs = event.created_at;
         const hasTag = event.tags?.some(t => t[0] === 'd' && t[1] === dTag);
         if (!hasTag) return;
         try {

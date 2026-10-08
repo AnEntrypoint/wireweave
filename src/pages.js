@@ -81,6 +81,7 @@ export class Pages extends EventTarget {
     if (!creator) return;
     const subId = 'pages-' + serverId;
     this.subs.set(serverId, subId);
+    const pageTs = new Map();
     this.pool.subscribe(subId,
       [{ kinds: [30078], authors: [creator] }],
       (event) => {
@@ -88,6 +89,8 @@ export class Pages extends EventTarget {
         const dTag = (event.tags.find(t => t[0] === 'd') || [])[1] || '';
         const prefix = dtag('page', serverId) + ':';
         if (!dTag.startsWith(prefix)) return;
+        if ((pageTs.get(dTag) ?? 0) > event.created_at) return;
+        pageTs.set(dTag, event.created_at);
         const slug = dTag.slice(prefix.length); if (!slug) return;
         try {
           const data = JSON.parse(event.content);

@@ -63,10 +63,12 @@ export class Settings extends EventTarget {
     if (!creator) return;
     const subId = 'settings-' + serverId;
     this.subs.set(serverId, subId);
+    let settingsTs = 0;
     this.pool.subscribe(subId,
       [{ kinds: [30078], authors: [creator], '#d': [dtag('settings', serverId)] }],
       (event) => {
-        if (event.pubkey !== creator) return;
+        if (event.pubkey !== creator || event.created_at < settingsTs) return;
+        settingsTs = event.created_at;
         try { this.store.set(serverId, JSON.parse(event.content)); this.dispatchEvent(new CustomEvent('updated', { detail: { serverId, next: this.store.get(serverId) } })); } catch {}
       });
   }

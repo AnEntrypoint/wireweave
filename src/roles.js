@@ -49,10 +49,12 @@ export class Roles extends EventTarget {
     if (!creator) return;
     const subId = 'roles-' + serverId;
     this.subs.set(serverId, subId);
+    let rolesTs = 0;
     this.pool.subscribe(subId,
       [{ kinds: [30078], authors: [creator], '#d': [dtag('roles', serverId)] }],
       (event) => {
-        if (event.pubkey !== creator) return;
+        if (event.pubkey !== creator || event.created_at < rolesTs) return;
+        rolesTs = event.created_at;
         try {
           const data = JSON.parse(event.content);
           this.store.set(serverId, { admins: data.admins || [], mods: data.mods || [] });

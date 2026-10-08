@@ -734,7 +734,10 @@ export class VoiceSession extends EventTarget {
     const from = event.pubkey; if (from === this.auth.pubkey) return;
     let data; try { data = JSON.parse(event.content); } catch { return; }
     if (!data?.type) return;
-    if (!this.peers.has(from)) this._maybeConnect(from);
+    if (!this.peers.has(from)) {
+      if (!this.participants.has('nostr-' + from.slice(0, 12))) return;
+      this._maybeConnect(from);
+    }
     const peer = this.peers.get(from); if (!peer) return;
     const pc = peer.pc; const fsmActor = peer.fsm;
     const addCands = (cands) => cands.forEach(c => pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {}));
