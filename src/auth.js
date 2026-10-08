@@ -55,9 +55,18 @@ export class NostrAuth extends EventTarget {
     return { pubkey: pk, privkey: sk };
   }
 
+  getExtension() {
+    if (this.extension) return this.extension;
+    if (typeof window === 'undefined' || !window.nostr) return null;
+    return window.nostr;
+  }
+
   async loginWithExtension() {
-    if (!this.extension) throw new Error('No extension provided');
-    const pk = await this.extension.getPublicKey();
+    const ext = this.getExtension();
+    if (!ext || typeof ext.getPublicKey !== 'function') throw new Error('No extension provided');
+    const pk = await ext.getPublicKey();
+    if (typeof pk !== 'string' || !/^[0-9a-f]{64}$/.test(pk)) throw new Error('Extension returned an invalid public key');
+    this.extension = ext;
     this.pubkey = pk;
     this.privkey = null;
 
@@ -68,9 +77,16 @@ export class NostrAuth extends EventTarget {
   }
 
   async sign(eventTemplate) {
-    if (this.privkey) return this.NT.finalizeEvent(eventTemplate, this.privkey);
-    if (this.extension) return this.extension.signEvent(eventTemplate);
+    if (this.privkey) return this._checkSigned(this.NT.finalizeEvent(eventTemplate, this.privkey));
+    const ext = this.getExtension();
+    if (ext) return this._checkSigned(await ext.signEvent(eventTemplate));
     throw new Error('No signing key available');
+  }
+
+  _checkSigned(signed) {
+    if (!signed || signed.pubkey !== this.pubkey) throw new Error('Signed event pubkey does not match the logged-in key');
+    if (!this.NT.verifyEvent(signed)) throw new Error('Signed event failed signature verification');
+    return signed;
   }
 
   logout() {
