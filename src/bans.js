@@ -82,13 +82,20 @@ export class Bans extends EventTarget {
     this.pool.publish(signed);
   }
 
+  _mayModerate(serverId, author, target) {
+    const creator = serverId.split(':')[0].toLowerCase();
+    if (author === creator) return target !== creator;
+    if (!this.roles || this.roles.getRole(serverId, author) !== 'admin') return false;
+    return ['member', 'moderator'].includes(this.roles.getRole(serverId, target));
+  }
+
   async kickFromVoice(serverId, pubkey) {
     if (!this.auth?.isLoggedIn()) throw new Error('Not logged in');
     if (this.roles && serverId && !this.roles.isAdmin(serverId)) throw new Error('Insufficient permissions');
     if (serverId) this._assertCanTarget(serverId, pubkey);
     const signed = await this.auth.sign({
       kind: 30078, created_at: Math.floor(Date.now() / 1000),
-      tags: [['d', dtag('kick', pubkey)]], content: ''
+      tags: [['d', dtag('kick', pubkey)], ...(serverId ? [['server', serverId]] : [])], content: ''
     });
     this.pool.publish(signed);
   }
@@ -136,15 +143,15 @@ export class Bans extends EventTarget {
     const subId = 'bans-' + serverId;
     this.subs.set(serverId, subId);
     this.pool.subscribe(subId,
-      [{ kinds: [30078], authors: [creator], '#server': [serverId] }],
+      [{ kinds: [30078], '#server': [serverId] }],
       (event) => {
-        if (event.pubkey !== creator) return;
         try {
           const dTag = event.tags.find(t => t[0] === 'd');
           if (!dTag?.[1]) return;
           const parsed = parseDtag(dTag[1]);
           if (!parsed || !['ban', 'unban', 'timeout', 'kick', 'mute'].includes(parsed.ns)) return;
           const pubkey = parsed.parts[parsed.parts.length - 1];
+          if (!this._mayModerate(serverId, event.pubkey, pubkey)) return;
           const data = this.store.get(serverId) || { banned: [], timeouts: {}, kicked: [], muted: {}, _banTs: {} };
           data.muted = data.muted || {};
           data._banTs = data._banTs || {};
