@@ -13,7 +13,7 @@ export class Servers extends EventTarget {
   load() {
     try { this.servers = JSON.parse(this.storage.getItem('zn_servers') || '[]'); } catch { this.servers = []; }
     if (this.auth.pubkey) {
-      this.pool.subscribe('my-servers', [{ kinds: [34550], authors: [this.auth.pubkey] }], (ev) => this._handleEvent(ev));
+      this.pool.subscribe('my-servers', [{ kinds: [34550], authors: [this.auth.pubkey] }], (ev) => { if (ev.pubkey === this.auth.pubkey) this._handleEvent(ev); });
     }
     try {
       const joined = JSON.parse(this.storage.getItem('zn_joined_servers') || '[]');
@@ -24,7 +24,7 @@ export class Servers extends EventTarget {
       Object.keys(byAuthor).forEach(author => {
         this.pool.subscribe('joined-server-' + author.slice(0, 8),
           [{ kinds: [34550], authors: [author], '#d': byAuthor[author] }],
-          (ev) => this._handleEvent(ev));
+          (ev) => { if (ev.pubkey === author) this._handleEvent(ev); });
       });
     } catch {}
     this._emit('updated', { servers: this.servers });

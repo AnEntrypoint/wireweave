@@ -33,7 +33,10 @@ export class Media {
       tags: [['t', 'upload'], ['x', hash], ['expiration', String(Math.floor(Date.now() / 1000) + 600)]],
       content: 'Upload ' + file.name
     });
-    return { header: 'Nostr ' + btoa(JSON.stringify(signed)), hash };
+    const bytes = new TextEncoder().encode(JSON.stringify(signed));
+    let bin = '';
+    bytes.forEach((b) => { bin += String.fromCharCode(b); });
+    return { header: 'Nostr ' + btoa(bin), hash };
   }
 
   async _uploadBlossom(file, serverUrl) {

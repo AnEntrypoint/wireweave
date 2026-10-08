@@ -65,6 +65,7 @@ export class Profile extends EventTarget {
     this.pool.subscribe(subId,
       [{ kinds: [KIND_METADATA], authors: [pubkey] }],
       (event) => {
+        if (event.pubkey !== pubkey || event.kind !== KIND_METADATA) return;
         const cached = this.cache.get(pubkey);
         if (cached && cached.eventCreatedAt >= event.created_at) return;
         let profile;

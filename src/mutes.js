@@ -48,6 +48,7 @@ export class Mutes extends EventTarget {
     this.pool.subscribe(this._sub,
       [{ kinds: [10000], authors: [this.auth.pubkey] }],
       (event) => {
+        if (event.pubkey !== this.auth.pubkey || event.kind !== 10000) return;
         if (event.created_at < latestTs) return;
         latestTs = event.created_at;
         this.muted = new Set((event.tags || []).filter((t) => t[0] === 'p').map((t) => t[1]));
