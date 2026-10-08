@@ -897,16 +897,13 @@ export class VoiceSession extends EventTarget {
     const ranked = [];
     for (const pk of all) {
 
-      let uplink = 0;
-      if (pk === this.auth.pubkey) uplink = this._estimateUplinkKbps();
-      else { const cap = this.sfu.capacityMatrix?.get(pk); if (cap && typeof cap._self === 'number') uplink = cap._self; }
+      const uplink = pk === this.auth.pubkey ? this._estimateUplinkKbps() : 0;
 
       const rtt = this.sfu.rttMatrix.get(pk);
       let rttAvg = Infinity, rttCount = 0;
       if (rtt) { let s = 0; for (const v of Object.values(rtt)) if (typeof v === 'number') { s += v; rttCount++; } if (rttCount) rttAvg = s / rttCount; }
 
-      const cap = this.sfu.capacityMatrix?.get(pk);
-      const capCount = cap ? Object.keys(cap).filter(k => k !== '_self').length : 0;
+      const capCount = pk === this.auth.pubkey ? Object.keys(this.sfu.capacityMatrix?.get(pk) || {}).filter(k => k !== '_self').length : 0;
 
       const rttTerm = rttCount ? Math.max(0, 200 - rttAvg) : 0;
       const coverageTerm = (rttCount + capCount) * 30;
