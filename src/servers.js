@@ -37,7 +37,7 @@ export class Servers extends EventTarget {
     if (!dTag) return;
     const serverId = event.pubkey + ':' + dTag[1];
     const name = nameTag ? nameTag[1] : serverId.slice(0, 8);
-    const iconColor = colorTag ? colorTag[1] : '#5865F2';
+    const iconColor = colorTag && /^#[0-9a-fA-F]{6}$/.test(colorTag[1]) ? colorTag[1] : '#5865F2';
     const existing = this.servers.find(s => s.id === serverId);
     if (existing) { existing.name = name; existing.iconColor = iconColor; existing.ownerId = event.pubkey; this.servers = [...this.servers]; }
     else this.servers = [...this.servers, { id: serverId, name, iconColor, ownerId: event.pubkey }];

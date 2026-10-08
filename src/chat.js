@@ -122,7 +122,8 @@ export class Chat extends EventTarget {
         const targetId = (ev.tags || []).find((t) => t[0] === 'e')?.[1];
         if (!targetId) return;
         const target = this.messages.find((m) => m.id === targetId);
-        if (target && target.userId !== ev.pubkey && !this.isAdmin(serverId)) return;
+        if (!target) { (this._pendingDeletes ||= new Map()).set(targetId, ev.pubkey); return; }
+        if (target.userId !== ev.pubkey && !this.isAdmin(serverId)) return;
         this.deletedIds.add(targetId);
         if (target) { this.messages = this.messages.filter((m) => m.id !== targetId); this._emit('messages', { list: this.messages }); }
       });
@@ -158,6 +159,11 @@ export class Chat extends EventTarget {
 
   _addMessage(msg) {
     if (this.messages.find(m => m.id === msg.id)) return;
+    const pendingBy = this._pendingDeletes?.get(msg.id);
+    if (pendingBy !== undefined) {
+      this._pendingDeletes.delete(msg.id);
+      if (pendingBy === msg.userId) { (this.deletedIds = this.deletedIds || new Set()).add(msg.id); return; }
+    }
     let i = this.messages.length;
     while (i > 0 && this.messages[i - 1].timestamp > msg.timestamp) i--;
     this.messages = [...this.messages.slice(0, i), msg, ...this.messages.slice(i)];

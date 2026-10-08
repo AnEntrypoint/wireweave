@@ -182,7 +182,7 @@ export class VoiceSession extends EventTarget {
     if (!this.actor.getSnapshot().can({ type: 'disconnect' })) return;
     ++this._epoch;
     this.actor.send({ type: 'disconnect' });
-    await this._publishPresence('leave');
+    try { await this._publishPresence('leave'); } catch {}
     this._stopHeartbeat();
     this._sfuStop();
     for (const pk of Array.from(this.peers.keys())) this._closePeer(pk);
