@@ -1,4 +1,4 @@
-import { dtag } from './dtag.js';
+import { dtag, replaceableTs } from './dtag.js';
 
 const DEFAULT_CATEGORIES = [
   { id: 'general', name: 'TEXT CHANNELS', position: 0 },
@@ -70,7 +70,7 @@ export class Channels extends EventTarget {
   async _publish() {
     if (!this.isOwner()) return;
     const signed = await this.auth.sign({
-      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      kind: 30078, created_at: replaceableTs(),
       tags: [['d', dtag('channels', this.serverId)]],
       content: JSON.stringify({ channels: this.channels, categories: this.categories })
     });

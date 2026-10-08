@@ -1,3 +1,4 @@
+import { replaceableTs } from './dtag.js';
 
 
 const DEFAULT_ICE_SERVERS = [
@@ -478,7 +479,7 @@ export class VoiceSession extends EventTarget {
     const reflexive = isHb ? this._reflexiveAddrs() : [];
     const uplinkKbps = isHb ? this._estimateUplinkKbps() : 0;
     const signed = await this.auth.sign({
-      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      kind: 30078, created_at: replaceableTs(),
       tags: [['d', 'zellous-voice:' + this.roomId], ['action', action], ['channel', this.channelName], ['server', this.serverId]],
       content: JSON.stringify({ action, name: this.displayName, channel: this.channelName, ts: Date.now(), rttScores, capScores, reflexive, uplinkKbps })
     });
@@ -785,7 +786,7 @@ export class VoiceSession extends EventTarget {
   async _publishSignal(toPubkey, type, data) {
     if (!this.auth.pubkey || !this.roomId) return;
     const d = 'zellous-rtc:' + this.roomId + ':' + this.auth.pubkey + ':' + toPubkey + ':' + type + ':' + (type === 'ice' ? Date.now() : 'sdp');
-    const signed = await this.auth.sign({ kind: 30078, created_at: Math.floor(Date.now() / 1000), tags: [['d', d], ['p', toPubkey], ['r', this.roomId]], content: JSON.stringify({ type, data }) });
+    const signed = await this.auth.sign({ kind: 30078, created_at: replaceableTs(), tags: [['d', d], ['p', toPubkey], ['r', this.roomId]], content: JSON.stringify({ type, data }) });
     this.pool.publish(signed);
   }
 

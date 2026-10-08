@@ -1,3 +1,4 @@
+import { replaceableTs } from './dtag.js';
 import { safeSetItem } from './safe-storage.js';
 
 export class Servers extends EventTarget {
@@ -50,7 +51,7 @@ export class Servers extends EventTarget {
     name = (name || '').trim();
     if (!name) throw new Error('server name cannot be empty');
     const dTag = serverId.split(':')[1];
-    const signed = await this.auth.sign({ kind: 34550, created_at: Math.floor(Date.now() / 1000), tags: [['d', dTag], ['name', name], ['color', iconColor]], content: '' });
+    const signed = await this.auth.sign({ kind: 34550, created_at: replaceableTs(), tags: [['d', dTag], ['name', name], ['color', iconColor]], content: '' });
     this.pool.publish(signed);
     const s = this.servers.find(x => x.id === serverId);
     if (s) { s.name = name; s.iconColor = iconColor; this.servers = [...this.servers]; this._persist(); this._emit('updated', { servers: this.servers }); }
@@ -59,7 +60,7 @@ export class Servers extends EventTarget {
   async create(name, iconColor = '#5865F2') {
     const dTag = Math.random().toString(36).slice(2, 10);
     const serverId = this.auth.pubkey + ':' + dTag;
-    const signed = await this.auth.sign({ kind: 34550, created_at: Math.floor(Date.now() / 1000), tags: [['d', dTag], ['name', name], ['color', iconColor]], content: '' });
+    const signed = await this.auth.sign({ kind: 34550, created_at: replaceableTs(), tags: [['d', dTag], ['name', name], ['color', iconColor]], content: '' });
     this.pool.publish(signed);
     this.servers = [...this.servers, { id: serverId, name, iconColor, ownerId: this.auth.pubkey }];
     this._persist();

@@ -14,3 +14,9 @@ export const parseDtag = (s) => {
   if (!NAMESPACES.has(ns)) return null;
   return { ns, parts };
 };
+
+let lastReplaceableTs = 0;
+export const replaceableTs = () => {
+  lastReplaceableTs = Math.max(Math.floor(Date.now() / 1000), lastReplaceableTs + 1);
+  return lastReplaceableTs;
+};

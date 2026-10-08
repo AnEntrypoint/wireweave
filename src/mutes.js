@@ -1,3 +1,4 @@
+import { replaceableTs } from './dtag.js';
 
 
 export class Mutes extends EventTarget {
@@ -31,7 +32,7 @@ export class Mutes extends EventTarget {
 
   async _publish() {
     const tags = Array.from(this.muted).map((pk) => ['p', pk]);
-    const signed = await this.auth.sign({ kind: 10000, created_at: Math.floor(Date.now() / 1000), tags, content: '' });
+    const signed = await this.auth.sign({ kind: 10000, created_at: replaceableTs(), tags, content: '' });
     this.pool.publish(signed);
   }
 

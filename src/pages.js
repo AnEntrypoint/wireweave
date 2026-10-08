@@ -62,7 +62,7 @@ const sanitize = (html) => {
   return el.innerHTML;
 };
 
-import { dtag } from './dtag.js';
+import { dtag, replaceableTs } from './dtag.js';
 
 export class Pages extends EventTarget {
   constructor({ relayPool, auth, roles }) {
@@ -111,7 +111,7 @@ export class Pages extends EventTarget {
   async publish(serverId, slug, title, html) {
     if (!this.roles.isAdmin(serverId)) throw new Error('Admin only');
     const safe = sanitize(html);
-    const signed = await this.auth.sign({ kind: 30078, created_at: Math.floor(Date.now() / 1000), tags: [['d', this._key(serverId, slug)]], content: JSON.stringify({ title, html: safe }) });
+    const signed = await this.auth.sign({ kind: 30078, created_at: replaceableTs(), tags: [['d', this._key(serverId, slug)]], content: JSON.stringify({ title, html: safe }) });
     this.pool.publish(signed);
     const pages = this.store.get(serverId) || new Map();
     pages.set(slug, { slug, title, html: safe, updatedAt: Math.floor(Date.now() / 1000), author: this.auth.pubkey });
@@ -121,7 +121,7 @@ export class Pages extends EventTarget {
 
   async deletePage(serverId, slug) {
     if (!this.roles.isAdmin(serverId)) throw new Error('Admin only');
-    const signed = await this.auth.sign({ kind: 30078, created_at: Math.floor(Date.now() / 1000), tags: [['d', this._key(serverId, slug)]], content: JSON.stringify({ deleted: true }) });
+    const signed = await this.auth.sign({ kind: 30078, created_at: replaceableTs(), tags: [['d', this._key(serverId, slug)]], content: JSON.stringify({ deleted: true }) });
     this.pool.publish(signed);
     const pages = this.store.get(serverId) || new Map();
     pages.delete(slug);

@@ -1,4 +1,4 @@
-import { dtag, parseDtag } from './dtag.js';
+import { dtag, parseDtag, replaceableTs } from './dtag.js';
 
 const AUDIT_LOG_MAX = 200;
 
@@ -36,7 +36,7 @@ export class Bans extends EventTarget {
     this._assertCanTarget(serverId, pubkey);
     const dTag = dtag('ban', serverId, pubkey);
     const signed = await this.auth.sign({
-      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      kind: 30078, created_at: replaceableTs(),
       tags: [['d', dTag], ['server', serverId]],
       content: JSON.stringify({ action: 'ban', pubkey, timestamp: Math.floor(Date.now() / 1000) })
     });
@@ -48,7 +48,7 @@ export class Bans extends EventTarget {
     if (this.roles && !this.roles.isAdmin(serverId)) throw new Error('Insufficient permissions');
     const dTag = dtag('unban', serverId, pubkey);
     const signed = await this.auth.sign({
-      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      kind: 30078, created_at: replaceableTs(),
       tags: [['d', dTag], ['server', serverId]],
       content: JSON.stringify({ action: 'unban', pubkey, timestamp: Math.floor(Date.now() / 1000) })
     });
@@ -62,7 +62,7 @@ export class Bans extends EventTarget {
     const expiry = Math.floor(Date.now() / 1000) + (minutes * 60);
     const dTag = dtag('timeout', serverId, pubkey);
     const signed = await this.auth.sign({
-      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      kind: 30078, created_at: replaceableTs(),
       tags: [['d', dTag], ['server', serverId]],
       content: JSON.stringify({ action: 'timeout', pubkey, expiry })
     });
@@ -75,7 +75,7 @@ export class Bans extends EventTarget {
     this._assertCanTarget(serverId, pubkey);
     const dTag = dtag('timeout', serverId, pubkey);
     const signed = await this.auth.sign({
-      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      kind: 30078, created_at: replaceableTs(),
       tags: [['d', dTag], ['server', serverId]],
       content: JSON.stringify({ action: 'timeout', pubkey, expiry: Math.floor(Date.now() / 1000) - 1 })
     });
@@ -94,7 +94,7 @@ export class Bans extends EventTarget {
     if (this.roles && serverId && !this.roles.isAdmin(serverId)) throw new Error('Insufficient permissions');
     if (serverId) this._assertCanTarget(serverId, pubkey);
     const signed = await this.auth.sign({
-      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      kind: 30078, created_at: replaceableTs(),
       tags: [['d', dtag('kick', pubkey)], ...(serverId ? [['server', serverId]] : [])], content: ''
     });
     this.pool.publish(signed);
@@ -106,7 +106,7 @@ export class Bans extends EventTarget {
     this._assertCanTarget(serverId, pubkey);
     const dTag = dtag('mute', serverId, channelId, pubkey);
     const signed = await this.auth.sign({
-      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      kind: 30078, created_at: replaceableTs(),
       tags: [['d', dTag], ['server', serverId], ['channel', channelId]],
       content: JSON.stringify({ action: 'mute', pubkey, channelId, timestamp: Math.floor(Date.now() / 1000) })
     });
@@ -118,7 +118,7 @@ export class Bans extends EventTarget {
     if (this.roles && !this.roles.isMod(serverId)) throw new Error('Insufficient permissions');
     const dTag = dtag('mute', serverId, channelId, pubkey);
     const signed = await this.auth.sign({
-      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      kind: 30078, created_at: replaceableTs(),
       tags: [['d', dTag], ['server', serverId], ['channel', channelId]],
       content: JSON.stringify({ action: 'unmute', pubkey, channelId, timestamp: Math.floor(Date.now() / 1000) })
     });

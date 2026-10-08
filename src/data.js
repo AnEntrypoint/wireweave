@@ -1,3 +1,4 @@
+import { replaceableTs } from './dtag.js';
 import { fragment, Reassembler, MTU_DEFAULT } from './frame.js';
 
 const DEFAULT_ICE_SERVERS = [
@@ -176,7 +177,7 @@ export class DataSession extends EventTarget {
   async _publishPresence(action) {
     if (!this.auth.isLoggedIn() || !this.roomId) return;
     const signed = await this.auth.sign({
-      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      kind: 30078, created_at: replaceableTs(),
       tags: [['d', 'wireweave-data:' + this.roomId], ['action', action], ['room', this.room], ['ns', this.namespace]],
       content: JSON.stringify({ action, name: this.displayName, room: this.room, ts: Date.now() })
     });
@@ -348,7 +349,7 @@ export class DataSession extends EventTarget {
     if (!this.auth.pubkey || !this.roomId) return;
     const d = 'wireweave-data-rtc:' + this.roomId + ':' + this.auth.pubkey + ':' + toPubkey + ':' + type + ':' + (type === 'ice' ? Date.now() : 'sdp');
     const signed = await this.auth.sign({
-      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      kind: 30078, created_at: replaceableTs(),
       tags: [['d', d], ['p', toPubkey], ['r', this.roomId]],
       content: JSON.stringify({ type, data })
     });
