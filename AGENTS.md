@@ -21,9 +21,9 @@ constructor as a cryptic `Servers: deps required` error, not at the
 createWireweave call site. An upfront guard in `src/wireweave.js` now throws
 `wireweave: storage required ...` early — keep it there.
 
-## Tests must use multiple relays, not a single hardcoded one
+## Live checks must use multiple relays, not a single hardcoded one
 
-`test.js` uses a `RELAYS` array (damus + nos.lol + primal + nostr.band) so
+Live checks use a `RELAYS` array (damus + nos.lol + primal + nostr.band) so
 `RelayPool`'s multi-relay fallback masks the inevitable flake of any one public
 relay. Do not collapse this back to a single `wss://relay.damus.io` — the
 auth/data/dm/round-trip phases will go red intermittently.
@@ -108,7 +108,7 @@ incomplete, buffered set — `Reassembler.sweep()` (run lazily on every
 sender never completes enough messages to trigger the staleMs path. Neither
 mechanism is optional — an unreliable channel without both would leak a
 buffer per dropped fragment forever. Verified via a real standalone script,
-`scratch-verify-mtu-framing.mjs` (not part of `test.js` — xstate isn't
+`scratch-verify-mtu-framing.mjs` (a live scratch script, not kept in the repo — xstate isn't
 installed in this environment so a full `DataSession` can't be instantiated
 here; the script drives the real `frame.js` primitives directly, the exact
 functions `sendUnreliable`/the unreliable `onmessage` handler call).
@@ -181,8 +181,8 @@ relay won't naturally collapse them into "one latest wins" the way a single
 namespace's replaceable event does — `subscribe()`'s handler tracks a
 per-pubkey `_banTs` (newest-seen `created_at`) explicitly, so an
 out-of-order-delivered OLDER ban event can never resurrect a NEWER unban
-(covered by `testBansModerationDepth` in test.js: a stale ban replayed after
-a newer unban is asserted to stay reversed). `mute(serverId, channelId,
+(checked live: a stale ban replayed after
+a newer unban stays reversed). `mute(serverId, channelId,
 pubkey)`/`unmute(...)` add channel-scoped silencing (mod-level permission,
 distinct from a server-wide ban/timeout which needs admin). `getAuditLog
 (serverId?)` returns every moderation action seen via `subscribe()`,
@@ -242,7 +242,7 @@ consumes it as a git submodule. Do not re-add npm-publish CI, an
 
 ## CI
 
-This checkout currently has no `.github/workflows/ci.yml` or deployment workflow. Do not claim a CI run from local verification. Public relay integration remains in root `test.js`; the deterministic production relay primitive is `EphemeralRelay`.
+This checkout currently has no `.github/workflows/ci.yml` or deployment workflow. Do not claim a CI run from local verification. Public relay integration is verified live (no test file is kept); the deterministic production relay primitive is `EphemeralRelay`.
 
 ## HiddenSpawn malware was committed to history (removed, but scan periodically)
 
@@ -260,10 +260,6 @@ branch and full test-suite re-run. Full incident detail: recall memory. Run
 `scan_deps` (gm skill Section 1a) periodically on this repo, not only on a
 fresh `npm install` — and never trust a commit's stated subject as evidence
 of its actual full diff.
-
-## test.js size cap
-
-The single integration witness (`test.js`) grows as coverage expands. The previous <=200 line cap is superseded: the file may grow freely as long as it remains a single file at repo root, mock-free for network tests, and real-services only for the relay round-trip. Current size: ~1220 lines (32+ tests, including the relay-health-scoring suite). Do not split into a `test/` directory.
 
 ## Contracts retained from the comment sweep
 

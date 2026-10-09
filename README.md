@@ -264,14 +264,6 @@ printf '%s' '{"name":"feedback_list","arguments":{"status":"open"}}' | WIREWEAVE
 
 Set `WIREWEAVE_FEEDBACK_RELAYS` to a JSON array of relay URLs, and `WIREWEAVE_FEEDBACK_KEY` only for writes. The package includes `ws`; install the `nostr-tools` peer dependency in the consuming Node project. The CLI returns one JSON MCP result and a nonzero exit code for errors.
 
-## test
-
-```
-npm test
-```
-
-hits `wss://relay.damus.io` for a real publish → subscribe round-trip.
-
 ## license
 
 MIT © AnEntrypoint — read the source.
