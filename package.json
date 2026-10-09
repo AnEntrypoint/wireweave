@@ -32,7 +32,7 @@
     "./feedback-tools": "./src/feedback-tools.js"
   },
   "scripts": {
-    "site:build":"npx --yes flatspace@latest build"
+    "site:build":"npx --yes flatspace@1.0.23 build"
   },
   "repository": {
     "type": "git",
