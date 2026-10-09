@@ -1,5 +1,7 @@
 import { dtag, replaceableTs } from './dtag.js';
 
+const sameSet = (a, b) => a.length === b.length && [...a].sort().every((v, i) => v === [...b].sort()[i]);
+
 export class Roles extends EventTarget {
   constructor({ relayPool, auth }) {
     super();
@@ -36,8 +38,8 @@ export class Roles extends EventTarget {
     if (role === 'admin') admins = [...admins, targetPubkey];
     else if (role === 'moderator') mods = [...mods, targetPubkey];
     const next = { admins, mods };
-    this.store.set(serverId, next);
     const signed = await this.auth.sign({ kind: 30078, created_at: replaceableTs(), tags: [['d', dtag('roles', serverId)]], content: JSON.stringify(next) });
+    this.store.set(serverId, next);
     this.pool.publish(signed);
     this.dispatchEvent(new CustomEvent('updated', { detail: { serverId, next } }));
   }
@@ -51,15 +53,19 @@ export class Roles extends EventTarget {
     this.subs.set(serverId, subId);
     let rolesTs = 0;
     this.pool.subscribe(subId,
-      [{ kinds: [30078], authors: [creator], '#d': [dtag('roles', serverId)] }],
+      [{ kinds: [30078], '#d': [dtag('roles', serverId)] }],
       (event) => {
-        if (event.pubkey !== creator || event.created_at < rolesTs) return;
+        if (event.created_at < rolesTs) return;
+        let data;
+        try { data = JSON.parse(event.content); } catch { return; }
+        const current = this.store.get(serverId) || { admins: [], mods: [] };
+        const admins = data.admins || [];
+        const signedByOwner = event.pubkey === creator;
+        const signedByAdmin = (current.admins || []).includes(event.pubkey);
+        if (!signedByOwner && !(signedByAdmin && sameSet(admins, current.admins || []))) return;
         rolesTs = event.created_at;
-        try {
-          const data = JSON.parse(event.content);
-          this.store.set(serverId, { admins: data.admins || [], mods: data.mods || [] });
-          this.dispatchEvent(new CustomEvent('updated', { detail: { serverId, next: this.store.get(serverId) } }));
-        } catch {}
+        this.store.set(serverId, { admins, mods: data.mods || [] });
+        this.dispatchEvent(new CustomEvent('updated', { detail: { serverId, next: this.store.get(serverId) } }));
       });
   }
 
