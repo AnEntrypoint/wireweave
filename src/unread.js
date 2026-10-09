@@ -5,6 +5,10 @@ const hexChannelId = async (channelId, serverId) => {
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
+const trySetItem = (storage, key, value) => {
+  try { storage.setItem(key, value); return true; } catch { return false; }
+};
+
 export class Unread extends EventTarget {
   constructor({ relayPool, auth, storage = null }) {
     super();
@@ -33,9 +37,7 @@ export class Unread extends EventTarget {
   }
 
   _save() {
-    try {
-      if (this.storage) this.storage.setItem(this._key(), JSON.stringify(this.lastRead));
-    } catch { /* storage full or blocked: counts still work for this session */ }
+    if (this.storage) trySetItem(this.storage, this._key(), JSON.stringify(this.lastRead));
   }
 
   _emit() {

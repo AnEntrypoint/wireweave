@@ -280,3 +280,7 @@ Site `.panel.ww-panel` needs greater specificity than the design SDK's panel rul
 ## Public page feedback
 
 `site/theme.mjs` prepares GitHub issues with page context and validated custom JSON metadata; it never posts before the visitor reviews on GitHub. GitHub Issues is enabled on the repository. SDK consumers can instead use `ensureFeedback({serverId})`, `mountFeedbackForm`, and `createFeedbackTools`/the `wireweave-feedback` JSON CLI. Feedback content, names, contact and metadata are public. Preserve the signing identity and the thread reference (including unconfirmed delivery references) for followup. Role authority comes from verified owner-signed role history; revoked developers no longer contribute actions when a thread is replayed. `fetchOnce` defaults to available-relay history; requireAllRelays enables strict hydration and historyStatus discloses its scope. The EOSE callback now receives the relay URL so consumers can count unique relays. Event-cap overflow raises FEEDBACK_HISTORY_INCOMPLETE.
+
+## Unread storage writes are best-effort
+
+`src/unread.js` `trySetItem` swallows storage write failures on purpose: storage can be full or blocked, and the unread counts keep working for the session without persistence.
