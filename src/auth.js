@@ -77,15 +77,19 @@ export class NostrAuth extends EventTarget {
   }
 
   async sign(eventTemplate) {
-    if (this.privkey) return this._checkSigned(this.NT.finalizeEvent(eventTemplate, this.privkey));
+    // An event signed with our own key is not verified again. Schnorr verification costs about as much
+    // as signing, both are synchronous main-thread work, and a profile of a page that signs at startup
+    // shows secp256k1 as a blocking slice of its load. Verifying what we just produced proves nothing
+    // the signing step did not. An event an extension signed is verified: that signature is not ours.
+    if (this.privkey) return this._checkSigned(this.NT.finalizeEvent(eventTemplate, this.privkey), false);
     const ext = this.getExtension();
-    if (ext) return this._checkSigned(await ext.signEvent(eventTemplate));
+    if (ext) return this._checkSigned(await ext.signEvent(eventTemplate), true);
     throw new Error('No signing key available');
   }
 
-  _checkSigned(signed) {
+  _checkSigned(signed, verify = true) {
     if (!signed || signed.pubkey !== this.pubkey) throw new Error('Signed event pubkey does not match the logged-in key');
-    if (!this.NT.verifyEvent(signed)) throw new Error('Signed event failed signature verification');
+    if (verify && !this.NT.verifyEvent(signed)) throw new Error('Signed event failed signature verification');
     return signed;
   }
 
