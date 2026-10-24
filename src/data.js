@@ -41,6 +41,8 @@ const warnDefaultTurnCredentialsOnce = () => {
 const PRESENCE_EXPIRY = 300000;
 const HEARTBEAT = 30000;
 const DISCONNECT_GRACE = 8000;
+const OFFER_RETRY_MS = 4000;
+const OFFER_RETRIES = 5;
 const DC_LABEL = 'wireweave-data';
 
 const DC_LABEL_UNRELIABLE = 'wireweave-data-unreliable';
@@ -280,7 +282,18 @@ export class DataSession extends EventTarget {
     }
     if (isOfferer) {
       fsmActor.send({ type: 'offer' });
-      pc.createOffer().then(o => pc.setLocalDescription(o).then(() => this._publishSignal(peerPubkey, 'offer', o))).catch(() => {});
+      const sendOffer = () => pc.createOffer().then(o => pc.setLocalDescription(o).then(() => this._publishSignal(peerPubkey, 'offer', o))).catch(() => {});
+      sendOffer();
+      let offerRetries = 0;
+      const retryOffer = () => {
+        peer.offerTimer = setTimeout(() => {
+          if (this.peers.get(peerPubkey) !== peer || pc.signalingState !== 'have-local-offer' || offerRetries >= OFFER_RETRIES) return;
+          offerRetries += 1;
+          sendOffer();
+          retryOffer();
+        }, OFFER_RETRY_MS);
+      };
+      retryOffer();
     }
   }
 
@@ -360,6 +373,7 @@ export class DataSession extends EventTarget {
     const peer = this.peers.get(peerPubkey); if (!peer) return;
     if (peer.iceTimer) clearTimeout(peer.iceTimer);
     if (peer.disconnectTimer) clearTimeout(peer.disconnectTimer);
+    if (peer.offerTimer) clearTimeout(peer.offerTimer);
     try { peer.dc?.close(); } catch {}
     try { peer.dcUnreliable?.close(); } catch {}
     try { peer.pc?.close(); } catch {}
