@@ -15,6 +15,12 @@ export class SelfRoles extends EventTarget {
     return [...(this.byServer.get(serverId)?.get(pubkey)?.roles || [])];
   }
 
+  holders(serverId, roleId) {
+    let n = 0;
+    for (const { roles } of (this.byServer.get(serverId)?.values() || [])) if (roles.includes(roleId)) n++;
+    return n;
+  }
+
   async set(serverId, roleIds) {
     if (!serverId) throw new Error('SelfRoles: serverId required');
     const next = [...new Set((roleIds || []).filter((x) => typeof x === 'string'))].slice(0, CAP);
