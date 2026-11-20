@@ -1,4 +1,4 @@
-const NAMESPACES = new Set(['ban', 'timeout', 'kick', 'page', 'channels', 'roles', 'settings', 'unban', 'mute', 'pins']);
+const NAMESPACES = new Set(['ban', 'timeout', 'kick', 'page', 'channels', 'roles', 'settings', 'unban', 'mute', 'pins', 'polls']);
 
 const PREFIX = 'zellous-';
 
