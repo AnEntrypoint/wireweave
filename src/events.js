@@ -1,4 +1,6 @@
 const EVENT_KIND = 31923;
+const RSVP_KIND = 31925;
+const DELETE_KIND = 5;
 
 const channelTag = async (channelId, serverId) => {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode((serverId || 'default') + ':' + channelId));
@@ -26,7 +28,31 @@ export class Events extends EventTarget {
     if (location) tags.push(['location', String(location).slice(0, 120)]);
     const signed = await this.auth.sign({ kind: EVENT_KIND, created_at: Math.floor(Date.now() / 1000), tags, content: String(about || '').slice(0, 120) });
     this.pool.publish(signed);
-    this.dispatchEvent(new CustomEvent('created', { detail: { serverId, channelId, event: signed } }));
+    this.dispatchEvent(new CustomEvent('created', { detail: { channelId, event: signed } }));
+    return signed;
+  }
+
+  async rsvp(event, accepted) {
+    if (!event || !event.id || !event.addr) throw new Error('Events: event id and address required');
+    const signed = await this.auth.sign({
+      kind: RSVP_KIND,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [['d', randomId()], ['a', event.addr], ['e', event.id], ['status', accepted ? 'accepted' : 'declined']],
+      content: ''
+    });
+    this.pool.publish(signed);
+    return signed;
+  }
+
+  async delete(event) {
+    if (!event || !event.id || !event.addr) throw new Error('Events: event id and address required');
+    const signed = await this.auth.sign({
+      kind: DELETE_KIND,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [['e', event.id], ['a', event.addr]],
+      content: 'deleted'
+    });
+    this.pool.publish(signed);
     return signed;
   }
 }
