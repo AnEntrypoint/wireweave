@@ -105,11 +105,17 @@ export class Chat extends EventTarget {
     const chanHex = await hexChannelId(channelId, serverId);
     if (this.activeChannelId !== channelId) return;
     const collected = [];
+    let loaded = false;
     this.pool.subscribe('chat-' + channelId,
       [{ kinds: [42], '#e': [chanHex], limit: 50 }],
-      (ev) => { if ((ev.tags || []).some(t => t[0] === 'e' && t[1] === chanHex) && !this._isBlocked(serverId, ev.pubkey) && !this.deletedIds.has(ev.id)) collected.push(this._eventToMsg(ev)); },
+      (ev) => {
+        if (!((ev.tags || []).some(t => t[0] === 'e' && t[1] === chanHex) && !this._isBlocked(serverId, ev.pubkey) && !this.deletedIds.has(ev.id))) return;
+        const msg = this._eventToMsg(ev);
+        if (loaded) this._addMessage(msg); else collected.push(msg);
+      },
       () => {
-        if (this.activeChannelId !== channelId) return;
+        if (loaded || this.activeChannelId !== channelId) return;
+        loaded = true;
         collected.sort((a, b) => a.timestamp - b.timestamp);
         this.messages = collected;
         this._emit('messages', { list: collected });
