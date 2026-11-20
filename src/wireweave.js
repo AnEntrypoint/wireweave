@@ -9,6 +9,7 @@ import { createMessageBus } from './message.js';
 import { createBans } from './bans.js';
 import { createRoles } from './roles.js';
 import { createPins } from './pins.js';
+import { createSelfRoles } from './selfroles.js';
 import { createEvents } from './events.js';
 import { createPolls } from './polls.js';
 import { createSettings } from './settings.js';
@@ -54,6 +55,7 @@ export const createWireweave = ({
   const events = createEvents({ relayPool: pool, auth });
   const polls = createPolls({ relayPool: pool, auth });
   const pins = createPins({ relayPool: pool, auth });
+  const selfRoles = createSelfRoles({ relayPool: pool, auth });
 
   let currentChannelId = null;
   const chat = createChat({
@@ -127,7 +129,7 @@ export const createWireweave = ({
   };
 
   const api = {
-    pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat, reactions, mutes, unread, forum, pins, events, polls,
+    pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat, reactions, mutes, unread, forum, pins, selfRoles, events, polls,
     get voice() { return voice; },
     ensureVoice,
     get dm() { return dm; },

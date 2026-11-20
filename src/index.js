@@ -12,6 +12,7 @@ export { MessageBus, createMessageBus } from './message.js';
 export { Bans, createBans } from './bans.js';
 export { Roles, createRoles } from './roles.js';
 export { Pins, createPins } from './pins.js';
+export { SelfRoles, createSelfRoles } from './selfroles.js';
 export { Events, createEvents } from './events.js';
 export { Polls, createPolls } from './polls.js';
 export { Settings, createSettings } from './settings.js';
