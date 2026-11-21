@@ -212,10 +212,58 @@ export class VoiceSession extends EventTarget {
     this.roomId = ''; this.channelName = '';
     this.muted = false; this.deafened = false;
     this.actor.send({ type: 'done' });
+    if (this.cameraStream) { this.cameraStream.getTracks().forEach(t => t.stop()); this.cameraStream = null; }
     this._emit('disconnected', {});
   }
 
   toggleMic() { return this.setMuted(!this.muted); }
+
+  async setCamera(on) {
+    const want = !!on;
+    if (want === !!this.cameraStream) return;
+    if (!want) {
+      this.cameraStream.getTracks().forEach(t => t.stop());
+      this.cameraStream = null;
+      for (const peer of this.peers.values()) peer.pc?.getTransceivers().forEach(t => { if (t.receiver.track.kind === 'video' && t.sender.track) t.sender.replaceTrack(null).catch(() => {}); });
+      this._setLocalVideo(false);
+      return;
+    }
+    let stream;
+    try { stream = await this.md.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 360 } } }); }
+    catch (e) { this._emit('media-warning', { message: 'camera unavailable: ' + e.message }); return; }
+    this.cameraStream = stream;
+    const track = stream.getVideoTracks()[0];
+    track.onended = () => { if (this.cameraStream === stream) this.setCamera(false); };
+    this._setLocalVideo(true);
+    for (const [pk, peer] of this.peers) this._attachCamera(peer, pk);
+  }
+
+  _setLocalVideo(on) {
+    const local = this.participants.get('local'); if (local) local.hasVideo = on;
+    this._emit('local-video', { stream: on ? this.cameraStream : null });
+    this._emit('participants', { list: this.getParticipants() });
+  }
+
+  _attachCamera(peer, peerPubkey) {
+    const pc = peer.pc; if (!pc || !this.cameraStream) return;
+    const track = this.cameraStream.getVideoTracks()[0];
+    const tr = pc.getTransceivers().find(t => t.receiver.track.kind === 'video' && !t.stopped);
+    if (tr) { tr.direction = 'sendrecv'; tr.sender.replaceTrack(track).catch(() => {}); }
+    else pc.addTrack(track, this.cameraStream);
+    this._renegotiate(peer, peerPubkey);
+  }
+
+  _renegotiate(peer, peerPubkey) {
+    const pc = peer.pc; if (!pc || pc.signalingState !== 'stable') return;
+    pc.createOffer().then(o => { o.sdp = this._mungeDtx(o.sdp); return pc.setLocalDescription(o).then(() => this._publishSignal(peerPubkey, 'offer', o)); }).catch(() => {});
+  }
+
+  _setRemoteVideo(peerPubkey, on) {
+    const p = this.participants.get('nostr-' + peerPubkey.slice(0, 12));
+    if (!p || !!p.hasVideo === on) return;
+    p.hasVideo = on;
+    this._emit('participants', { list: this.getParticipants() });
+  }
 
   setMuted(want) {
     const next = !!want;
@@ -609,6 +657,7 @@ export class VoiceSession extends EventTarget {
     if (isOfferer) {
       if (this.localStream) this.localStream.getTracks().forEach(t => pc.addTransceiver(t, { direction: 'sendrecv', streams: [this.localStream] }));
       else pc.addTransceiver('audio', { direction: 'recvonly' });
+      if (this.cameraStream) pc.addTransceiver(this.cameraStream.getVideoTracks()[0], { direction: 'sendrecv', streams: [this.cameraStream] });
     }
     this._wirePeer(peer, peerPubkey, fsmActor, isOfferer);
 
@@ -627,7 +676,13 @@ export class VoiceSession extends EventTarget {
   _wirePeer(peer, peerPubkey, fsmActor, isOfferer) {
     const pc = peer.pc;
     pc.ontrack = (ev) => {
-      if (ev.track.kind === 'video') { this.onVideoTrack?.({ peerPubkey, track: ev.track, stream: ev.streams[0] }); return; }
+      if (ev.track.kind === 'video') {
+        ev.track.onunmute = () => this._setRemoteVideo(peerPubkey, true);
+        ev.track.onmute = () => this._setRemoteVideo(peerPubkey, false);
+        ev.track.onended = () => this._setRemoteVideo(peerPubkey, false);
+        this.onVideoTrack?.({ peerPubkey, track: ev.track, stream: ev.streams[0] });
+        return;
+      }
       this.onAudioTrack?.({ peerPubkey, track: ev.track, stream: ev.streams[0], peer });
       this._attachAnalyzer(peerPubkey, ev.streams[0]);
       try { ev.receiver.playoutDelayHint = 0.02; } catch {}
@@ -760,6 +815,7 @@ export class VoiceSession extends EventTarget {
       const hasAudioTx = pc.getTransceivers().some(t => t.receiver.track?.kind === 'audio');
       if (!hasAudioTx) pc.addTransceiver('audio', { direction: this.localStream ? 'sendrecv' : 'recvonly' });
       if (this.localStream) { const hasSender = pc.getSenders().some(s => s.track?.kind === 'audio'); if (!hasSender) this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream)); }
+      if (this.cameraStream) { const vt = pc.getTransceivers().find(t => t.receiver.track.kind === 'video' && !t.stopped && !t.sender.track); if (vt) { vt.direction = 'sendrecv'; vt.sender.replaceTrack(this.cameraStream.getVideoTracks()[0]).catch(() => {}); } }
       const a = await pc.createAnswer(); a.sdp = this._mungeDtx(a.sdp); await pc.setLocalDescription(a); fsmActor.send({ type: 'sent_answer' }); this._publishSignal(from, 'answer', a);
     };
     if (data.type === 'offer') {
