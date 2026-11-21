@@ -517,7 +517,7 @@ export class VoiceSession extends EventTarget {
     this._emit('deafen', { deafened: this.deafened });
   }
 
-  getParticipants() { return Array.from(this.participants.values()); }
+  getParticipants() { return Array.from(this.participants, ([key, p]) => ({ ...p, key })); }
 
   async _publishPresence(action) {
     if (!this.auth.isLoggedIn() || !this.roomId) return;
