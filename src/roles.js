@@ -71,7 +71,7 @@ export class Roles extends EventTarget {
         const signedByAdmin = (current.admins || []).includes(event.pubkey);
         if (!signedByOwner && !(signedByAdmin && sameSet(admins, current.admins || []))) return;
         rolesTs = event.created_at;
-        this.store.set(serverId, { admins, mods: data.mods || [] });
+        this.store.set(serverId, { admins, mods: data.mods || [], editors: data.editors || [] });
         this.dispatchEvent(new CustomEvent('updated', { detail: { serverId, next: this.store.get(serverId) } }));
       });
   }
