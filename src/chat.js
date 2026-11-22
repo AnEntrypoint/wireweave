@@ -66,7 +66,7 @@ export class Chat extends EventTarget {
     return this._sendTimes[0] + this.rateLimitWindowMs - now;
   }
 
-  async send(content, { announcement = false, replyTo = null } = {}) {
+  async send(content, { announcement = false, replyTo = null, previews = [] } = {}) {
     const { channelId, serverId, channelType } = this.getChannelContext();
     if (!this.auth.isLoggedIn()) {
       this._emit('send-blocked', { reason: 'not-signed-in' });
@@ -97,6 +97,7 @@ export class Chat extends EventTarget {
     const tags = [['e', chanHex, '', 'root']];
     if (replyTo?.id) tags.push(['e', replyTo.id, '', 'reply']);
     if (isAnnouncementPost) tags.push(['t', 'announcement']);
+    for (const p of previews.slice(0, 3)) tags.push(['preview', p.url, String(p.title || '').slice(0, 120), String(p.description || '').slice(0, 240), p.image || '']);
     let template = { kind: 42, created_at: Math.floor(Date.now() / 1000), tags, content: trimmed, pubkey: this.auth.pubkey };
     if (this.powDifficulty > 0 && this.getEventHash) template = minePow(this.getEventHash, template, this.powDifficulty);
     const signed = await this.auth.sign(template);
@@ -204,7 +205,8 @@ export class Chat extends EventTarget {
     const imeta = (event.tags || []).find(t => t[0] === 'imeta');
     const field = (key) => { const f = imeta && imeta.slice(1).find(x => typeof x === 'string' && x.startsWith(key + ' ')); return f ? f.slice(key.length + 1) : null; };
     const media = imeta && field('url') ? { url: field('url'), mime: field('m') || '', size: Number(field('size')) || null } : null;
-    return { id: event.id, type: 'text', userId: event.pubkey, content: event.content, timestamp: event.created_at * 1000, tags: tTags, replyTo, ...(media ? { media } : {}) };
+    const previews = (event.tags || []).filter((t) => t[0] === 'preview' && /^https?:\/\//.test(t[1] || '')).slice(0, 3).map((t) => ({ url: t[1], title: String(t[2] || '').slice(0, 120), description: String(t[3] || '').slice(0, 240), image: /^https:\/\//.test(t[4] || '') ? t[4] : '' }));
+    return { id: event.id, type: 'text', userId: event.pubkey, content: event.content, timestamp: event.created_at * 1000, tags: tTags, replyTo, ...(media ? { media } : {}), ...(previews.length ? { previews } : {}) };
   }
 
   _addMessage(msg) {

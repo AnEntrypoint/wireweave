@@ -338,6 +338,7 @@ export class RelayPool extends EventTarget {
       relay.subIds.clear();
       relay.queue = [];
       relay.authed = false;
+      relay.authFailed = false;
       relay.challenge = null;
       for (const subId of this.subs.keys()) this._sendReq(url, relay, subId);
       this._drainPending(url, ws);
@@ -529,7 +530,7 @@ export class RelayPool extends EventTarget {
 
   async _maybeAuth(url) {
     const relay = this.relays.get(url);
-    if (!relay?.challenge || !this._signAuth || relay.authPending || relay.authed || relay.ws?.readyState !== 1) return;
+    if (!relay?.challenge || !this._signAuth || relay.authPending || relay.authed || relay.authFailed || relay.ws?.readyState !== 1) return;
     relay.authPending = true;
     let signed = null;
     try {
@@ -579,6 +580,7 @@ export class RelayPool extends EventTarget {
     if (relay?.authEvents.has(id)) {
       relay.authEvents.delete(id);
       if (accepted) this._onAuthAccepted(url, relay);
+      else { relay.authFailed = true; this._emit('auth-failed', { url, reason }); }
       return;
     }
     const rec = this._pubs.get(id);
