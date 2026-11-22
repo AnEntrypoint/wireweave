@@ -22,7 +22,12 @@ export class Roles extends EventTarget {
     const r = this.store.get(serverId) || {};
     if ((r.admins || []).includes(pubkey)) return 'admin';
     if ((r.mods || []).includes(pubkey)) return 'moderator';
+    if ((r.editors || []).includes(pubkey)) return 'editor';
     return 'member';
+  }
+
+  isEditor(serverId, pubkey) {
+    return this.getRole(serverId, pubkey) === 'owner' || this.getRole(serverId, pubkey) === 'editor';
   }
 
   async setRole(serverId, targetPubkey, role) {
@@ -32,12 +37,14 @@ export class Roles extends EventTarget {
     if (!this.isOwner(serverId) && this.getRole(serverId, targetPubkey) === 'admin') {
       throw new Error('Only the owner can change another admin\'s role');
     }
-    const existing = this.store.get(serverId) || { admins: [], mods: [] };
+    const existing = this.store.get(serverId) || { admins: [], mods: [], editors: [] };
     let admins = (existing.admins || []).filter(p => p !== targetPubkey);
     let mods = (existing.mods || []).filter(p => p !== targetPubkey);
+    let editors = (existing.editors || []).filter(p => p !== targetPubkey);
     if (role === 'admin') admins = [...admins, targetPubkey];
     else if (role === 'moderator') mods = [...mods, targetPubkey];
-    const next = { admins, mods };
+    else if (role === 'editor') editors = [...editors, targetPubkey];
+    const next = { admins, mods, editors };
     const signed = await this.auth.sign({ kind: 30078, created_at: replaceableTs(), tags: [['d', dtag('roles', serverId)]], content: JSON.stringify(next) });
     this.store.set(serverId, next);
     this.pool.publish(signed);
