@@ -1,3 +1,4 @@
+import { joinContent, greetingFor } from './membership.js';
 const DELETION_LOOKBACK_S = 7 * 86400;
 const DELETION_LIMIT = 300;
 
@@ -89,6 +90,22 @@ export class Chat extends EventTarget {
     const signed = await this.auth.sign(template);
     this.pool.publish(signed);
     this._addMessage(this._eventToMsg(signed));
+  }
+
+  async sendTo(serverId, channelId, content) {
+    if (!this.auth.isLoggedIn() || !serverId || !channelId) return;
+    if (this.bans && (this.bans.isBanned(serverId, this.auth.pubkey) || this.bans.isTimedOut(serverId, this.auth.pubkey))) return;
+    const trimmed = String(content || '').trim();
+    if (!trimmed) return;
+    const chanHex = await hexChannelId(channelId, serverId);
+    const signed = await this.auth.sign({ kind: 42, created_at: Math.floor(Date.now() / 1000), tags: [['e', chanHex, '', 'root']], content: trimmed, pubkey: this.auth.pubkey });
+    this.pool.publish(signed);
+    const ctx = this.getChannelContext();
+    if (ctx.serverId === serverId && ctx.channelId === channelId) this._addMessage(this._eventToMsg(signed));
+  }
+
+  announceJoin(serverId, channelId) {
+    return this.sendTo(serverId, channelId, joinContent(greetingFor(this.auth.pubkey)));
   }
 
   async loadHistory(channelId) {

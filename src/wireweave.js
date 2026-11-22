@@ -11,6 +11,7 @@ import { createRoles } from './roles.js';
 import { createPins } from './pins.js';
 import { createSelfRoles } from './selfroles.js';
 import { createPresence } from './presence.js';
+import * as membership from './membership.js';
 import { createEvents } from './events.js';
 import { createPolls } from './polls.js';
 import { createSettings } from './settings.js';
@@ -131,7 +132,7 @@ export const createWireweave = ({
   };
 
   const api = {
-    pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat, reactions, mutes, unread, forum, pins, selfRoles, presence, events, polls,
+    pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat, reactions, mutes, unread, forum, pins, selfRoles, presence, membership, events, polls,
     get voice() { return voice; },
     ensureVoice,
     get dm() { return dm; },
