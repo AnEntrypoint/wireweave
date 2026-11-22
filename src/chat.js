@@ -1,4 +1,7 @@
 import { joinContent, greetingFor } from './membership.js';
+const TYPING_KIND = 20042;
+const TYPING_TTL_MS = 6000;
+const TYPING_THROTTLE_MS = 3000;
 const DELETION_LOOKBACK_S = 7 * 86400;
 const DELETION_LIMIT = 300;
 
@@ -43,6 +46,7 @@ export class Chat extends EventTarget {
 
     this.getEventHash = getEventHash; this.powDifficulty = powDifficulty;
     this.activeChannelId = null;
+    this.typers = new Map(); this.lastTypingSent = 0; this.typingTimer = null;
     this.messages = [];
     this.profiles = new Map(); this.fetching = new Set();
     this._sendTimes = [];
@@ -141,6 +145,7 @@ export class Chat extends EventTarget {
     if (this.activeChannelId) {
       this.pool.unsubscribe('chat-' + this.activeChannelId);
       this.pool.unsubscribe('chat-deletions-' + this.activeChannelId);
+      this.pool.unsubscribe('chat-typing-' + this.activeChannelId);
     }
     this.activeChannelId = channelId;
     this._emit('channel', { channelId });
@@ -166,6 +171,17 @@ export class Chat extends EventTarget {
         merged.sort((a, b) => a.timestamp - b.timestamp);
         this.messages = merged;
         this._emit('messages', { list: merged });
+      });
+    this.typers.clear();
+    this.pool.subscribe('chat-typing-' + channelId,
+      [{ kinds: [TYPING_KIND], '#e': [chanHex], since: Math.floor(Date.now() / 1000) - 5 }],
+      (ev) => {
+        if (ev.pubkey === this.auth.pubkey || this._isBlocked(serverId, ev.pubkey)) return;
+        if (!(ev.tags || []).some((t) => t[0] === 'e' && t[1] === chanHex)) return;
+        this.typers.set(ev.pubkey, Date.now() + TYPING_TTL_MS);
+        this._emitTyping();
+        clearTimeout(this.typingTimer);
+        this.typingTimer = setTimeout(() => this._emitTyping(), TYPING_TTL_MS + 50);
       });
     this.pool.subscribe('chat-deletions-' + channelId,
       [{ kinds: [5], since: Math.floor(Date.now() / 1000) - DELETION_LOOKBACK_S, limit: DELETION_LIMIT }],
@@ -272,6 +288,25 @@ export class Chat extends EventTarget {
   }
 
   updateProfile(pubkey, profile) { this.profiles.set(pubkey, profile); this._emit('profile', { pubkey, profile }); }
+
+  typingPubkeys() {
+    const now = Date.now();
+    for (const [pk, until] of this.typers) if (until <= now) this.typers.delete(pk);
+    return [...this.typers.keys()];
+  }
+
+  _emitTyping() { this._emit('typing', { pubkeys: this.typingPubkeys() }); }
+
+  async sendTyping() {
+    const { serverId, channelId } = this.getChannelContext();
+    if (!this.auth.isLoggedIn() || !serverId || !channelId) return;
+    const now = Date.now();
+    if (now - this.lastTypingSent < TYPING_THROTTLE_MS) return;
+    this.lastTypingSent = now;
+    const chanHex = await hexChannelId(channelId, serverId);
+    const signed = await this.auth.sign({ kind: TYPING_KIND, created_at: Math.floor(now / 1000), tags: [['e', chanHex, '', 'root']], content: '', pubkey: this.auth.pubkey });
+    this.pool.publish(signed);
+  }
 
   _emit(t, d) { this.dispatchEvent(new CustomEvent(t, { detail: d })); }
 }
