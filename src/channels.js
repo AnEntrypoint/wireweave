@@ -30,6 +30,7 @@ export class Channels extends EventTarget {
     this.channels = known ? known.channels.slice() : [];
     this.categories = known ? known.categories.slice() : [];
     this.loaded = !!known;
+    if (known) this._emit('updated', { channels: this.channels, categories: this.categories });
     const ownerPubkey = serverId.split(':')[0].toLowerCase();
     const dTag = dtag('channels', serverId);
     let channelsTs = 0;
