@@ -42,6 +42,7 @@ export const createWireweave = ({
   const fsm = createFSM(xstate);
   const pool = createRelayPool({ relays, verifyEvent: nostrTools.verifyEvent, WebSocketImpl });
   const auth = createAuth({ nostrTools, storage, extension });
+  pool.setAuthSigner((template) => auth.sign(template));
   const message = createMessageBus();
   const roles = createRoles({ relayPool: pool, auth });
   const bans = createBans({ relayPool: pool, auth, roles });

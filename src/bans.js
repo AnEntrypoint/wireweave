@@ -37,7 +37,7 @@ export class Bans extends EventTarget {
     const dTag = dtag('ban', serverId, pubkey);
     const signed = await this.auth.sign({
       kind: 30078, created_at: replaceableTs(),
-      tags: [['d', dTag], ['server', serverId]],
+      tags: [['d', dTag], ['s', serverId]],
       content: JSON.stringify({ action: 'ban', pubkey, timestamp: Math.floor(Date.now() / 1000) })
     });
     this.pool.publish(signed);
@@ -49,7 +49,7 @@ export class Bans extends EventTarget {
     const dTag = dtag('unban', serverId, pubkey);
     const signed = await this.auth.sign({
       kind: 30078, created_at: replaceableTs(),
-      tags: [['d', dTag], ['server', serverId]],
+      tags: [['d', dTag], ['s', serverId]],
       content: JSON.stringify({ action: 'unban', pubkey, timestamp: Math.floor(Date.now() / 1000) })
     });
     this.pool.publish(signed);
@@ -63,7 +63,7 @@ export class Bans extends EventTarget {
     const dTag = dtag('timeout', serverId, pubkey);
     const signed = await this.auth.sign({
       kind: 30078, created_at: replaceableTs(),
-      tags: [['d', dTag], ['server', serverId]],
+      tags: [['d', dTag], ['s', serverId]],
       content: JSON.stringify({ action: 'timeout', pubkey, expiry })
     });
     this.pool.publish(signed);
@@ -76,7 +76,7 @@ export class Bans extends EventTarget {
     const dTag = dtag('timeout', serverId, pubkey);
     const signed = await this.auth.sign({
       kind: 30078, created_at: replaceableTs(),
-      tags: [['d', dTag], ['server', serverId]],
+      tags: [['d', dTag], ['s', serverId]],
       content: JSON.stringify({ action: 'timeout', pubkey, expiry: Math.floor(Date.now() / 1000) - 1 })
     });
     this.pool.publish(signed);
@@ -95,7 +95,7 @@ export class Bans extends EventTarget {
     if (serverId) this._assertCanTarget(serverId, pubkey);
     const signed = await this.auth.sign({
       kind: 30078, created_at: replaceableTs(),
-      tags: [['d', dtag('kick', pubkey)], ...(serverId ? [['server', serverId]] : [])], content: ''
+      tags: [['d', dtag('kick', pubkey)], ...(serverId ? [['s', serverId]] : [])], content: ''
     });
     this.pool.publish(signed);
   }
@@ -107,7 +107,7 @@ export class Bans extends EventTarget {
     const dTag = dtag('mute', serverId, channelId, pubkey);
     const signed = await this.auth.sign({
       kind: 30078, created_at: replaceableTs(),
-      tags: [['d', dTag], ['server', serverId], ['channel', channelId]],
+      tags: [['d', dTag], ['s', serverId], ['channel', channelId]],
       content: JSON.stringify({ action: 'mute', pubkey, channelId, timestamp: Math.floor(Date.now() / 1000) })
     });
     this.pool.publish(signed);
@@ -119,7 +119,7 @@ export class Bans extends EventTarget {
     const dTag = dtag('mute', serverId, channelId, pubkey);
     const signed = await this.auth.sign({
       kind: 30078, created_at: replaceableTs(),
-      tags: [['d', dTag], ['server', serverId], ['channel', channelId]],
+      tags: [['d', dTag], ['s', serverId], ['channel', channelId]],
       content: JSON.stringify({ action: 'unmute', pubkey, channelId, timestamp: Math.floor(Date.now() / 1000) })
     });
     this.pool.publish(signed);
@@ -143,7 +143,7 @@ export class Bans extends EventTarget {
     const subId = 'bans-' + serverId;
     this.subs.set(serverId, subId);
     this.pool.subscribe(subId,
-      [{ kinds: [30078], '#server': [serverId] }],
+      [{ kinds: [30078], '#s': [serverId] }, { kinds: [30078], authors: [creator], limit: 300 }],
       (event) => {
         try {
           const dTag = event.tags.find(t => t[0] === 'd');

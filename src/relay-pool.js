@@ -21,6 +21,17 @@ const SEEN_MAX = 10000;
 const PENDING_MAX = 500;
 const PENDING_TTL_MS = 120000;
 const CONNECT_TIMEOUT_MS = 10000;
+const DEFAULT_MAX_REQS = 12;
+const MIN_MAX_REQS = 4;
+const RATE_LIMIT_BASE_MS = 30000;
+const RATE_LIMIT_MAX_MS = 300000;
+const PUBLISH_TIMEOUT_MS = 12000;
+const PUBLISH_TRACK_MAX = 300;
+const AUTH_RETRY_MS = 2000;
+const AUTH_RETRY_MAX = 8;
+const ACCEPTED_REASONS = /^(duplicate|exists)/i;
+const AUTH_REASONS = /^auth-required|^restricted:.*auth/i;
+const subPriority = (subId) => (/^(chat-|dm-)/.test(subId) ? 0 : /^profile/.test(subId) ? 3 : 1);
 const jitter = (ms) => Math.round(ms * (0.75 + Math.random() * 0.5));
 
 const EWMA_ALPHA = 0.3;
@@ -161,6 +172,8 @@ export class RelayPool extends EventTarget {
     this._loadHealth();
     this._saveHealthTimer = null;
 
+    this._pubs = new Map();
+    this._signAuth = null;
     this.budget = publishBudget === false ? null : new PublishBudget(publishBudget);
     this._budgetDrainTimer = null;
 
@@ -298,7 +311,7 @@ export class RelayPool extends EventTarget {
     this._reconnectTimers.delete(url);
     const existing = this.relays.get(url);
     if (existing?.ws && (existing.ws.readyState === 0 || existing.ws.readyState === 1)) return;
-    const relay = existing || { ws: null, status: 'connecting', subIds: new Set(), latencyMs: null, failCount: 0, reconnectDelay: 1000, _reqSentAt: null, _openedAt: null, _eoseReqSentAt: new Map() };
+    const relay = existing || { ws: null, status: 'connecting', subIds: new Set(), latencyMs: null, failCount: 0, reconnectDelay: 1000, _reqSentAt: null, _openedAt: null, _eoseReqSentAt: new Map(), maxReqs: DEFAULT_MAX_REQS, queue: [], blocked: new Map(), deferred: new Set(), authRequired: new Set(), authEvents: new Set(), rateLimitedUntil: 0, rateLimitLevel: 0, challenge: null, authed: false, authPending: false };
     if (!relay._eoseReqSentAt) relay._eoseReqSentAt = new Map();
     relay.status = 'connecting';
     relay.latencyMs = null;
@@ -322,12 +335,11 @@ export class RelayPool extends EventTarget {
       health.recordConnectLatency(relay._openedAt - connectStartedAt);
       this._scheduleSaveHealth();
       this._emit('relay-status', { url, status: 'connected' });
-      for (const [subId, sub] of this.subs) {
-        ws.send(JSON.stringify(['REQ', subId, ...sub.filters]));
-        relay.subIds.add(subId);
-        if (!relay._reqSentAt) relay._reqSentAt = Date.now();
-        relay._eoseReqSentAt.set(subId, Date.now());
-      }
+      relay.subIds.clear();
+      relay.queue = [];
+      relay.authed = false;
+      relay.challenge = null;
+      for (const subId of this.subs.keys()) this._sendReq(url, relay, subId);
       this._drainPending(url, ws);
     };
     ws.onmessage = (e) => {
@@ -392,41 +404,256 @@ export class RelayPool extends EventTarget {
         this._getHealth(url).recordEoseLatency(Date.now() - sentAt);
         this._scheduleSaveHealth();
       }
+      if (relay) { relay.rateLimitLevel = 0; relay.subIds.has(subId); }
       this.subs.get(subId)?.onEose?.(url);
       this._emit('eose', { subId });
     } else if (type === 'NOTICE') {
+      this._onNotice(url, String(msg[1] || ''));
       this._emit('notice', { url, message: msg[1] });
+    } else if (type === 'CLOSED') {
+      this._onClosed(url, subId, String(msg[2] || ''));
+    } else if (type === 'AUTH') {
+      this._onAuthChallenge(url, msg[1]);
     } else if (type === 'OK') {
       const accepted = msg[2] === true;
       const id = msg[1], reason = msg[3] || '';
       if (accepted) this._emit('ok', { url, id });
       else this._emit('reject', { url, id, reason });
-      this._settleAck(id, accepted, reason);
+      this._onAck(url, id, accepted, reason);
     }
+  }
+
+  _sendReq(url, relay, subId) {
+    const sub = this.subs.get(subId);
+    if (!sub || relay.ws?.readyState !== 1 || relay.blocked.has(subId) || relay.subIds.has(subId)) return;
+    if (Date.now() < relay.rateLimitedUntil) { relay.deferred.add(subId); this._scheduleResume(url, relay); return; }
+    if (relay.subIds.size >= relay.maxReqs && !this._evictLowerPriority(relay, subId)) {
+      if (!relay.queue.includes(subId)) {
+        relay.queue.push(subId);
+        relay.queue.sort((a, b) => subPriority(a) - subPriority(b));
+      }
+      return;
+    }
+    relay.ws.send(JSON.stringify(['REQ', subId, ...sub.filters]));
+    this._bump(url, 'out');
+    relay.subIds.add(subId);
+    if (!relay._reqSentAt) relay._reqSentAt = Date.now();
+    if (!relay._eoseReqSentAt) relay._eoseReqSentAt = new Map();
+    relay._eoseReqSentAt.set(subId, Date.now());
+  }
+
+  _drainQueue(url, relay) {
+    while (relay.queue.length && relay.subIds.size < relay.maxReqs && Date.now() >= relay.rateLimitedUntil) {
+      const subId = relay.queue.shift();
+      this._sendReq(url, relay, subId);
+    }
+  }
+
+  _scheduleResume(url, relay) {
+    if (relay._resumeTimer) return;
+    relay._resumeTimer = setTimeout(() => {
+      relay._resumeTimer = null;
+      if (this._closed) return;
+      const deferred = [...relay.deferred];
+      relay.deferred.clear();
+      for (const subId of deferred) this._sendReq(url, relay, subId);
+    }, Math.max(500, relay.rateLimitedUntil - Date.now()));
+  }
+
+  _evictLowerPriority(relay, incoming) {
+    const incomingPriority = subPriority(incoming);
+    let victim = null;
+    for (const subId of relay.subIds) {
+      if (subPriority(subId) <= incomingPriority) continue;
+      if (!victim || subPriority(subId) > subPriority(victim)) victim = subId;
+    }
+    if (!victim) return false;
+    this._parkSub(relay, victim);
+    return true;
+  }
+
+  _parkSub(relay, subId) {
+    if (relay.ws?.readyState === 1) relay.ws.send(JSON.stringify(['CLOSE', subId]));
+    relay.subIds.delete(subId);
+    relay._eoseReqSentAt?.delete(subId);
+    if (!relay.queue.includes(subId)) relay.queue.push(subId);
+    relay.queue.sort((a, b) => subPriority(a) - subPriority(b));
+  }
+
+  _onNotice(url, message) {
+    const relay = this.relays.get(url);
+    if (!relay || !/too many/i.test(message)) return;
+    let dropped = null;
+    for (const [subId, sentAt] of relay._eoseReqSentAt || []) {
+      if (relay.subIds.has(subId) && (!dropped || sentAt > relay._eoseReqSentAt.get(dropped))) dropped = subId;
+    }
+    if (!dropped) return;
+    this._parkSub(relay, dropped);
+    relay.maxReqs = Math.max(MIN_MAX_REQS, relay.subIds.size);
+  }
+
+  _onClosed(url, subId, reason) {
+    const relay = this.relays.get(url);
+    if (!relay) return;
+    relay.subIds.delete(subId);
+    relay._eoseReqSentAt?.delete(subId);
+    const code = reason.split(':')[0].toLowerCase();
+    if (code === 'auth-required') {
+      relay.authRequired.add(subId);
+      this._maybeAuth(url);
+    } else if (code === 'rate-limited') {
+      relay.rateLimitLevel += 1;
+      relay.rateLimitedUntil = Date.now() + Math.min(RATE_LIMIT_BASE_MS * 2 ** (relay.rateLimitLevel - 1), RATE_LIMIT_MAX_MS);
+      relay.deferred.add(subId);
+      this._scheduleResume(url, relay);
+    } else {
+      relay.blocked.set(subId, reason);
+    }
+    this._emit('sub-closed', { url, subId, reason });
+    this._drainQueue(url, relay);
+  }
+
+  setAuthSigner(signer) {
+    this._signAuth = signer;
+    for (const url of this.relays.keys()) this._maybeAuth(url);
+  }
+
+  _onAuthChallenge(url, challenge) {
+    const relay = this.relays.get(url);
+    if (!relay || typeof challenge !== 'string') return;
+    relay.challenge = challenge;
+    relay.authed = false;
+    relay.authTries = 0;
+    this._maybeAuth(url);
+  }
+
+  async _maybeAuth(url) {
+    const relay = this.relays.get(url);
+    if (!relay?.challenge || !this._signAuth || relay.authPending || relay.authed || relay.ws?.readyState !== 1) return;
+    relay.authPending = true;
+    let signed = null;
+    try {
+      signed = await this._signAuth({ kind: 22242, created_at: Math.floor(Date.now() / 1000), tags: [['relay', url], ['challenge', relay.challenge]], content: '' });
+    } catch {}
+    relay.authPending = false;
+    if (signed?.id && relay.ws?.readyState === 1) {
+      relay.authEvents.add(signed.id);
+      relay.ws.send(JSON.stringify(['AUTH', signed]));
+      this._bump(url, 'out');
+    } else if ((relay.authTries = (relay.authTries || 0) + 1) <= AUTH_RETRY_MAX) {
+      setTimeout(() => this._maybeAuth(url), AUTH_RETRY_MS);
+    }
+  }
+
+  _onAuthAccepted(url, relay) {
+    relay.authed = true;
+    const subIds = [...relay.authRequired];
+    relay.authRequired.clear();
+    for (const subId of subIds) this._sendReq(url, relay, subId);
+    for (const rec of this._pubs.values()) {
+      if (rec.fail.get(url) && AUTH_REASONS.test(rec.fail.get(url)) && relay.ws?.readyState === 1) {
+        rec.fail.delete(url);
+        relay.ws.send(JSON.stringify(['EVENT', rec.event]));
+        this._bump(url, 'out');
+      }
+    }
+  }
+
+  _track(event, sentTo) {
+    if (!event?.id) return null;
+    let rec = this._pubs.get(event.id);
+    if (!rec) {
+      rec = { id: event.id, event, sent: new Set(), ok: new Set(), fail: new Map(), state: 'pending', timer: null, at: Date.now() };
+      this._pubs.set(event.id, rec);
+      while (this._pubs.size > PUBLISH_TRACK_MAX) this._pubs.delete(this._pubs.keys().next().value);
+    }
+    for (const url of sentTo) rec.sent.add(url);
+    if (rec.timer) clearTimeout(rec.timer);
+    rec.timer = setTimeout(() => this._settlePublish(rec, true), PUBLISH_TIMEOUT_MS);
+    this._emitPublish(rec);
+    return rec;
+  }
+
+  _onAck(url, id, accepted, reason) {
+    const relay = this.relays.get(url);
+    if (relay?.authEvents.has(id)) {
+      relay.authEvents.delete(id);
+      if (accepted) this._onAuthAccepted(url, relay);
+      return;
+    }
+    const rec = this._pubs.get(id);
+    if (!rec) { this._settleAck(id, accepted); return; }
+    if (accepted || ACCEPTED_REASONS.test(reason)) { rec.ok.add(url); rec.fail.delete(url); }
+    else {
+      rec.fail.set(url, reason || 'rejected');
+      if (AUTH_REASONS.test(reason)) { if (relay) { relay.authRequired.add('pub:' + id); this._maybeAuth(url); } }
+    }
+    this._settlePublish(rec, false);
+  }
+
+  _settlePublish(rec, timedOut) {
+    const answered = rec.ok.size + rec.fail.size;
+    const next = rec.ok.size > 0 ? 'sent' : (timedOut || (rec.sent.size > 0 && answered >= rec.sent.size && ![...rec.fail.values()].some((r) => AUTH_REASONS.test(r)))) ? 'failed' : 'pending';
+    if (rec.state === 'sent' && next === 'failed') return;
+    rec.state = next;
+    if (next !== 'pending' && rec.timer) { clearTimeout(rec.timer); rec.timer = null; }
+    this._emitPublish(rec);
+    this._settleAck(rec.id, next === 'sent');
+  }
+
+  _emitPublish(rec) {
+    this._emit('publish-status', this.publishStatus(rec.id));
+  }
+
+  publishStatus(id) {
+    const rec = this._pubs.get(id);
+    if (!rec) return null;
+    return { id, state: rec.state, ok: rec.ok.size, failed: rec.fail.size, total: Math.max(rec.sent.size, this.connectedCount()), failures: [...rec.fail].map(([url, reason]) => ({ url, reason })) };
+  }
+
+  connectedCount() {
+    let n = 0;
+    for (const [, r] of this.relays) if (r.ws?.readyState === 1) n++;
+    return n;
+  }
+
+  retryPublish(id) {
+    const rec = this._pubs.get(id);
+    if (!rec) return false;
+    rec.ok.clear();
+    rec.fail.clear();
+    rec.sent.clear();
+    rec.state = 'pending';
+    const sentTo = new Set();
+    for (const [url, relay] of this.relays) {
+      if (relay.ws?.readyState === 1) { relay.ws.send(JSON.stringify(['EVENT', rec.event])); this._bump(url, 'out'); sentTo.add(url); }
+    }
+    this._track(rec.event, sentTo);
+    return sentTo.size > 0;
   }
 
   subscribe(subId, filters, onEvent, onEose) {
     subId = safeSubId(subId);
     this.subs.set(subId, { filters, onEvent, onEose, seen: new Set() });
-    for (const [, relay] of this.relays) {
-      if (relay.ws?.readyState === 1) {
-        relay.ws.send(JSON.stringify(['REQ', subId, ...filters]));
-        relay.subIds.add(subId);
-        if (!relay._reqSentAt) relay._reqSentAt = Date.now();
-        if (!relay._eoseReqSentAt) relay._eoseReqSentAt = new Map();
-        relay._eoseReqSentAt.set(subId, Date.now());
-      }
+    for (const [url, relay] of this.relays) {
+      relay.blocked.delete(subId);
+      this._sendReq(url, relay, subId);
     }
     return subId;
   }
 
   unsubscribe(subId) {
     subId = safeSubId(subId);
-    for (const [, relay] of this.relays) {
+    for (const [url, relay] of this.relays) {
       if (relay.ws?.readyState === 1 && relay.subIds.has(subId)) {
         relay.ws.send(JSON.stringify(['CLOSE', subId]));
         relay.subIds.delete(subId);
       }
+      relay.queue = relay.queue.filter((id) => id !== subId);
+      relay.deferred.delete(subId);
+      relay.authRequired.delete(subId);
+      relay.blocked.delete(subId);
+      this._drainQueue(url, relay);
     }
     this.subs.delete(subId);
   }
@@ -451,6 +678,7 @@ export class RelayPool extends EventTarget {
         anyDisconnected = true;
       }
     }
+    this._track(event, sentTo);
     if (anyDisconnected || !sent) this._queuePending(event, sentTo);
     else if (event?.id) this._pendingIds.delete(event.id);
     return sent;
@@ -525,6 +753,7 @@ export class RelayPool extends EventTarget {
         if (entry.sentTo.has(url)) continue;
         ws.send(JSON.stringify(['EVENT', entry.event]));
         entry.sentTo.add(url);
+        this._track(entry.event, [url]);
       }
     }
     this.pending = this.pending.filter((entry) => {
