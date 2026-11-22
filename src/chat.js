@@ -68,7 +68,10 @@ export class Chat extends EventTarget {
 
   async send(content, { announcement = false, replyTo = null } = {}) {
     const { channelId, serverId, channelType } = this.getChannelContext();
-    if (!this.auth.isLoggedIn()) return;
+    if (!this.auth.isLoggedIn()) {
+      this._emit('send-blocked', { reason: 'not-signed-in' });
+      return;
+    }
     if (!channelId) {
       this._emit('send-blocked', { reason: 'no-channel' });
       return;
