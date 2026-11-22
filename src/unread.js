@@ -18,6 +18,7 @@ export class Unread extends EventTarget {
     this.storage = storage;
     this.counts = {};
     this.lastRead = {};
+    this.boundaries = {};
     this.activeChannelId = null;
     this.serverId = null;
     this.hexToChannel = new Map();
@@ -52,7 +53,10 @@ export class Unread extends EventTarget {
 
   countFor(channelId) { return this.counts[channelId] || 0; }
 
+  boundaryFor(channelId) { return this.boundaries[channelId] || null; }
+
   setActive(channelId) {
+    if (channelId && channelId !== this.activeChannelId) this.boundaries[channelId] = this.lastRead[channelId] || null;
     this.activeChannelId = channelId || null;
     if (!channelId) return;
     this.counts[channelId] = 0;
