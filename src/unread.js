@@ -67,6 +67,7 @@ export class Unread extends EventTarget {
 
   markRead(channelId) {
     if (!channelId) return;
+    delete this.boundaries[channelId];
     this.counts[channelId] = 0;
     this.lastRead[channelId] = Math.max(this.lastRead[channelId] || 0, nowSec());
     this._save();
