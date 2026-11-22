@@ -156,6 +156,7 @@ export class RelayPool extends EventTarget {
     this.autoRotate = autoRotate;
     this.fallbackRelays = [...fallbackRelays];
     this.health = new Map();
+    this.traffic = new Map();
     for (const url of this.urls) this.health.set(url, new RelayHealth(url));
     this._loadHealth();
     this._saveHealthTimer = null;
@@ -167,6 +168,16 @@ export class RelayPool extends EventTarget {
     let n = 2;
     while (debug.get(this._debugKey)) this._debugKey = 'relayPool' + n++;
     debug.register(this._debugKey, this);
+  }
+
+  _bump(url, dir) {
+    let t = this.traffic.get(url);
+    if (!t) { t = { in: 0, out: 0 }; this.traffic.set(url, t); }
+    t[dir] += 1;
+  }
+
+  relayTraffic() {
+    return [...this.urls].map((url) => { const t = this.traffic.get(url) || { in: 0, out: 0 }; return { url, in: t.in, out: t.out }; });
   }
 
   _getHealth(url) {
@@ -320,6 +331,7 @@ export class RelayPool extends EventTarget {
       this._drainPending(url, ws);
     };
     ws.onmessage = (e) => {
+      this._bump(url, 'in');
       if (relay._reqSentAt && relay.latencyMs === null) {
         relay.latencyMs = Date.now() - relay._reqSentAt;
         relay._reqSentAt = null;
@@ -432,6 +444,7 @@ export class RelayPool extends EventTarget {
     for (const [url, relay] of this.relays) {
       if (relay.ws?.readyState === 1) {
         relay.ws.send(JSON.stringify(['EVENT', event]));
+        this._bump(url, 'out');
         sent = true;
         sentTo.add(url);
       } else {
