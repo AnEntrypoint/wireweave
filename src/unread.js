@@ -73,6 +73,16 @@ export class Unread extends EventTarget {
     this._emit();
   }
 
+  markUnread(channelId, atSec) {
+    if (!channelId) return;
+    const at = Math.max(1, Math.floor(atSec || 0));
+    this.lastRead[channelId] = at;
+    this.boundaries[channelId] = at;
+    this.counts[channelId] = Math.max(1, this.counts[channelId] || 0);
+    this._save();
+    this._emit();
+  }
+
   async start(serverId, channels = []) {
     if (!serverId) return this.stop();
     const text = (channels || []).filter((c) => c && c.id && c.type !== 'voice');
