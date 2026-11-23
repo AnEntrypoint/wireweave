@@ -27,6 +27,7 @@ import { register } from './debug.js';
 import { createFeedback } from './feedback.js';
 import { createAccount } from './account.js';
 import { createRemoteSigner } from './remote-signer.js';
+import * as modules from './modules/index.js';
 
 export const createWireweave = ({
   nostrTools,
@@ -141,7 +142,7 @@ export const createWireweave = ({
   };
 
   const api = {
-    pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat, reactions, mutes, unread, forum, pins, selfRoles, presence, membership, events, polls, account, remote,
+    pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat, reactions, mutes, unread, forum, pins, selfRoles, presence, membership, events, polls, account, remote, modules,
     get voice() { return voice; },
     ensureVoice,
     get dm() { return dm; },

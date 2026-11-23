@@ -33,3 +33,5 @@ export { Feedback, createFeedback } from './feedback.js';
 export { createFeedbackTools, feedbackToolDefinitions } from './feedback-tools.js';
 export { mountFeedbackForm } from './feedback-form.js';
 export * as modules from './modules/index.js';
+export * from './vad/index.js';
+export { ThreadScheduler, createThreadScheduler, createVoiceThread, bindVoiceThread, createBlobPlayer, createRemoteCapture, parseKeptClipEvent, buildKeepTags, THREAD_MODES, VOICE_THREAD_TYPE } from './modules/voice-thread.js';

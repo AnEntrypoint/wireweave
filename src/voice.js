@@ -1,4 +1,5 @@
 import { replaceableTs } from './dtag.js';
+import { createStreamTap } from './vad/stream-tap.js';
 
 
 const DEFAULT_ICE_SERVERS = [
@@ -52,7 +53,7 @@ export class VoiceSession extends EventTarget {
     onAudioTrack = null, onVideoTrack = null, createPeerConnection = defaultCreatePeerConnection,
     pttMode = true, micSensitivity = SPEAKER_ACTIVE_RMS, noiseSuppression = true,
     echoCancellation = true, autoGainControl = true, audioQuality = DEFAULT_AUDIO_QUALITY, dtx = true, fec = true,
-    forceRelay = false
+    forceRelay = false, createClipVad = null
   }) {
     super();
     if (!fsm || !xstate || !relayPool || !auth || !mediaDevices) throw new Error('VoiceSession: missing deps');
@@ -85,6 +86,12 @@ export class VoiceSession extends EventTarget {
     this.fec = !!fec;
 
     this.forceRelay = !!forceRelay;
+
+    this.createClipVad = createClipVad;
+    this.clipVad = null;
+    this._clipTap = null;
+    this._clipSeq = 0;
+    this.livePlaybackOpen = true;
   }
 
   setForceRelay(on) {
@@ -167,6 +174,7 @@ export class VoiceSession extends EventTarget {
         if (this._localListenTrack) this._localListenTrack.enabled = true;
         const listenStream = this._localListenTrack ? new MediaStream([this._localListenTrack]) : this.localStream;
         this._attachAnalyzer('local', listenStream);
+        this._startClipVad(listenStream);
       }
       this.actor.send({ type: 'connected' });
       this._subscribeSignals();
@@ -201,6 +209,7 @@ export class VoiceSession extends EventTarget {
     for (const pk of Object.keys(this.retrySchedule)) this._cancelReconnect(pk);
     if (this._activityTimer) { clearInterval(this._activityTimer); this._activityTimer = null; }
     if (this._activeAnalyzers) { for (const k of Array.from(this._activeAnalyzers.keys())) this._detachAnalyzer(k); }
+    this._stopClipVad();
     if (this._outboundRec) { try { this._outboundRec.rec.stop(); } catch {} this._outboundRec = null; }
     if (this._actx && this._actx.state !== 'closed') { try { this._actx.close(); } catch {} this._actx = null; }
     if (this.cameraStream) { this.cameraStream.getTracks().forEach(t => t.stop()); this.cameraStream = null; }
@@ -210,7 +219,7 @@ export class VoiceSession extends EventTarget {
     this._unsubscribeBanEnforcement();
     this.participants.clear();
     this.roomId = ''; this.channelName = '';
-    this.muted = false; this.deafened = false;
+    this.muted = false; this.deafened = false; this.livePlaybackOpen = true;
     this.actor.send({ type: 'done' });
     if (this.cameraStream) { this.cameraStream.getTracks().forEach(t => t.stop()); this.cameraStream = null; }
     this._emit('disconnected', {});
@@ -322,7 +331,7 @@ export class VoiceSession extends EventTarget {
       a.an.getByteTimeDomainData(buf);
       let sum = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
       const rms = Math.sqrt(sum / buf.length);
-      const active = rms > this.micSensitivity;
+      const active = (key === 'local' && this.clipVad?.isReady) ? this.clipVad.voiceActive : rms > this.micSensitivity;
       if (active) a.lastActive = now;
       const stillSpeaking = active || (now - a.lastActive) < SPEAKER_HOLD_MS;
       if (stillSpeaking !== a.speaking) { a.speaking = stillSpeaking; this._setSpeaking(key, stillSpeaking); }
@@ -333,6 +342,24 @@ export class VoiceSession extends EventTarget {
       }
     }
     this._maybeAutoTransmit();
+  }
+
+  async _startClipVad(stream) {
+    if (!this.createClipVad || this.clipVad) return;
+    const ctx = this._ensureAudioCtx(); if (!ctx) return;
+    const epoch = this._epoch;
+    try {
+      const vad = this.createClipVad({ sampleRate: ctx.sampleRate });
+      await vad.ready;
+      const tap = await createStreamTap({ ctx, stream, onSamples: (samples) => vad.push(samples) });
+      if (epoch !== this._epoch) { tap.close(); return; }
+      this.clipVad = vad; this._clipTap = tap;
+    } catch (e) { this._emit('media-warning', { message: 'voice detector unavailable, using the energy gate: ' + e.message }); }
+  }
+
+  _stopClipVad() {
+    try { this._clipTap?.close(); } catch {}
+    this._clipTap = null; this.clipVad = null;
   }
 
   _setSpeaking(key, val) {
@@ -421,7 +448,10 @@ export class VoiceSession extends EventTarget {
     if (!o.chunks.length) return;
     const blob = new Blob(o.chunks, { type: o.mime });
     const buf = new Uint8Array(await blob.arrayBuffer());
-    const segment = { id: o.segId, from: this.auth.pubkey, name: this.displayName || 'Me', mime: o.mime, ts: o.ts, dur: Date.now() - o.ts, bytes: buf };
+    const end = Date.now();
+    const segment = { id: o.segId, seq: ++this._clipSeq, from: this.auth.pubkey, name: this.displayName || 'Me', mime: o.mime, ts: o.ts, dur: end - o.ts, bytes: buf };
+    const verdict = this.clipVad?.assess(o.ts, end);
+    if (verdict && verdict.frames > 0 && !verdict.keep) { this._emit('segment-dropped', { kind: 'outbound', segment: { ...segment, bytes: null }, verdict }); return; }
     this._emit('segment-finalized', { kind: 'outbound', segment });
     this._broadcastSegment(segment);
   }
@@ -462,7 +492,7 @@ export class VoiceSession extends EventTarget {
     const open = [];
     for (const [pk, peer] of this.peers) if (peer.dc?.readyState === 'open') open.push([pk, peer]);
     if (!open.length) return;
-    const meta = { type: 'seg-meta', segId: seg.id, from: seg.from, name: seg.name, mime: seg.mime, ts: seg.ts, dur: seg.dur, total: Math.ceil(seg.bytes.length / DC_CHUNK_MAX), bytes: seg.bytes.length };
+    const meta = { type: 'seg-meta', segId: seg.id, from: seg.from, name: seg.name, mime: seg.mime, ts: seg.ts, dur: seg.dur, seq: seg.seq, total: Math.ceil(seg.bytes.length / DC_CHUNK_MAX), bytes: seg.bytes.length };
     for (const [, peer] of open) this._dcSendJSON(peer, meta);
     let idx = 0;
     for (let off = 0; off < seg.bytes.length; off += DC_CHUNK_MAX, idx++) {
@@ -487,7 +517,7 @@ export class VoiceSession extends EventTarget {
         const total = inbox.parts.reduce((n, p) => n + (p?.length || 0), 0);
         const buf = new Uint8Array(total); let off = 0;
         for (const p of inbox.parts) { buf.set(p, off); off += p.length; }
-        const segment = { id: inbox.meta.segId, from: inbox.meta.from || peerPubkey, name: inbox.meta.name, mime: inbox.meta.mime, ts: inbox.meta.ts, dur: inbox.meta.dur, bytes: buf };
+        const segment = { id: inbox.meta.segId, from: inbox.meta.from || peerPubkey, name: inbox.meta.name, mime: inbox.meta.mime, ts: inbox.meta.ts, dur: inbox.meta.dur, seq: inbox.meta.seq, bytes: buf };
         this._emit('segment-received', { kind: 'inbound', from: peerPubkey, segment });
       }
       return;
@@ -513,9 +543,23 @@ export class VoiceSession extends EventTarget {
 
   toggleDeafen() {
     this.deafened = !this.deafened;
-    for (const [, peer] of this.peers) if (peer.audioEl) peer.audioEl.muted = this.deafened;
+    this._applyPlaybackMute();
     this._emit('deafen', { deafened: this.deafened });
   }
+
+  _applyPlaybackMute() {
+    for (const [, peer] of this.peers) if (peer.audioEl) peer.audioEl.muted = this.deafened || !this.livePlaybackOpen;
+  }
+
+  setLivePlayback(open) {
+    const next = !!open;
+    if (this.livePlaybackOpen === next) return;
+    this.livePlaybackOpen = next;
+    this._applyPlaybackMute();
+    this._emit('live-playback', { open: next });
+  }
+
+  getRemoteStream(peerPubkey) { return this.peers.get(peerPubkey)?.remoteStream || null; }
 
   getParticipants() { return Array.from(this.participants, ([key, p]) => ({ ...p, key })); }
 
@@ -684,6 +728,8 @@ export class VoiceSession extends EventTarget {
         return;
       }
       this.onAudioTrack?.({ peerPubkey, track: ev.track, stream: ev.streams[0], peer });
+      this._applyPlaybackMute();
+      peer.remoteStream = ev.streams[0];
       this._attachAnalyzer(peerPubkey, ev.streams[0]);
       try { ev.receiver.playoutDelayHint = 0.02; } catch {}
       ev.track.onended = () => { if (peer.fsm.getSnapshot().matches('connected')) this._doIceRestart(peer, peerPubkey, fsmActor); };

@@ -1,3 +1,5 @@
+import { buildKeepTags } from './modules/voice-thread.js';
+
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 const mb = (bytes) => (bytes / (1024 * 1024)).toFixed(1);
@@ -103,6 +105,7 @@ export class Media {
     if (typeof url !== 'string') return null;
     if (/\.(png|jpe?g|gif|webp|svg|avif|heic|heif|tiff?|bmp)(\?|$)/i.test(url)) return 'image';
     if (/\.(mp4|webm|mov|ogg|ogv|mkv|m4v|avi)(\?|$)/i.test(url)) return 'video';
+    if (/\.(mp3|wav|m4a|aac|opus|oga|flac)(\?|$)/i.test(url)) return 'audio';
     return null;
   }
 
@@ -117,6 +120,20 @@ export class Media {
     const signed = await this.auth.sign({
       kind: 42, created_at: Math.floor(Date.now() / 1000),
       tags: [['e', chanHex, '', 'root'], imetaTag], content: result.url
+    });
+    this.pool.publish(signed);
+    return { signed, result };
+  }
+
+  async sendAudioClip(file, { channelId, serverId, durationMs, speaker, seq }) {
+    if (!String(file.type || '').startsWith('audio/')) throw new Error('sendAudioClip needs an audio file');
+    if (file.size > MAX_UPLOAD_BYTES) throw new Error('clip is ' + mb(file.size) + ' MB — the limit is ' + mb(MAX_UPLOAD_BYTES) + ' MB');
+    const result = await this.upload(file);
+    const channelHex = await hexChannelId(channelId, serverId);
+    const signed = await this.auth.sign({
+      kind: 42, created_at: Math.floor(Date.now() / 1000),
+      tags: buildKeepTags({ channelHex, url: result.url, mime: result.type, durationMs, speaker: speaker || this.auth.pubkey, seq }),
+      content: result.url
     });
     this.pool.publish(signed);
     return { signed, result };
