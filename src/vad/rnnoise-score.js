@@ -11,7 +11,7 @@ export const createVoiceScorer = async ({ loader, smoothingFrames = SMOOTHING_FR
     recent.push(raw);
     if (recent.length > smoothingFrames) recent.shift();
     const smoothed = recent.reduce((a, b) => a + b, 0) / recent.length;
-    return { raw, smoothed, denoisedDb: engine.denoisedEnergyDb ? engine.denoisedEnergyDb() : null };
+    return { raw, smoothed, denoisedDb: engine.denoisedEnergyDb ? engine.denoisedEnergyDb() : null, denoised: engine.denoisedFrame ? engine.denoisedFrame() : null };
   };
   const reset = () => { recent.length = 0; };
   return { scoreFrame, reset };

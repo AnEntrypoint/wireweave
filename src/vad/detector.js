@@ -3,6 +3,7 @@ import { FramePipeline } from './frame-pipeline.js';
 import { createVoiceScorer } from './rnnoise-score.js';
 import { ClipSegmenter } from './segmenter.js';
 import { judgeClip } from './clip-filter.js';
+import { PitchTracker } from './pitch.js';
 
 const frameEnergyDb = (frame) => {
   let sum = 0;
@@ -15,19 +16,30 @@ export const createVoiceDetector = ({ loader, sampleRate = RNNOISE_SAMPLE_RATE, 
   const segmenter = new ClipSegmenter({ config: cfg, keepPcm });
   const frameLog = [];
   const stats = { frames: 0, clipsKept: 0, clipsDropped: 0, droppedBeforeReady: 0 };
+  const recent = [];
+  const pitch = new PitchTracker();
   let scorer = null;
 
-  const handleFrame = (frame, index) => {
-    const { raw, smoothed, denoisedDb } = scorer.scoreFrame(frame);
+  const ingest = ({ raw, denoisedDb = null, periodicity, f0, frame = null }, index) => {
+    recent.push(raw);
+    if (recent.length > cfg.smoothingFrames) recent.shift();
+    const smoothed = recent.reduce((x, y) => x + y, 0) / recent.length;
     const t = now();
-    const energyDb = denoisedDb ?? frameEnergyDb(frame);
+    const energyDb = denoisedDb ?? (frame ? frameEnergyDb(frame) : SILENCE_FLOOR_DB);
+    const feature = { smoothed, energyDb, periodicity, f0, t };
     stats.frames++;
-    frameLog.push({ t, smoothed, energyDb });
+    frameLog.push(feature);
     const cutoff = t - FRAME_LOG_MS;
     while (frameLog.length && frameLog[0].t < cutoff) frameLog.shift();
-    onFrame?.({ raw, smoothed, energyDb, t, index });
-    const clip = segmenter.push(smoothed, frame, index, energyDb);
+    onFrame?.({ raw, ...feature, index });
+    const clip = segmenter.push(feature, frame, index);
     if (clip) emitClip(clip);
+  };
+
+  const handleFrame = (frame, index) => {
+    const { raw, denoisedDb, denoised } = scorer.scoreFrame(frame);
+    const { periodicity, f0 } = pitch.push(denoised ?? frame);
+    ingest({ raw, denoisedDb, periodicity, f0, frame }, index);
   };
 
   const emitClip = (clip) => {
@@ -42,6 +54,7 @@ export const createVoiceDetector = ({ loader, sampleRate = RNNOISE_SAMPLE_RATE, 
     ready,
     config: cfg,
     stats,
+    ingest,
     get voiceActive() { return segmenter.liveVoiced; },
     get isReady() { return scorer !== null; },
     push(samples) {
@@ -54,9 +67,8 @@ export const createVoiceDetector = ({ loader, sampleRate = RNNOISE_SAMPLE_RATE, 
       return clip;
     },
     assess(startMs, endMs) {
-      const recent = frameLog.filter((f) => f.t >= startMs && f.t <= endMs + FRAME_MS);
-      const verdict = judgeClip(recent.map((f) => f.smoothed), cfg, recent.map((f) => f.energyDb));
-      return { ...verdict, frames: recent.length };
+      const window = frameLog.filter((f) => f.t >= startMs && f.t <= endMs + FRAME_MS);
+      return { ...judgeClip(window, cfg), frames: window.length };
     }
   };
   return api;

@@ -21,5 +21,11 @@ export const createRnnoiseLoader = (importFactoryModule) => async () => {
     for (let i = 0; i < RNNOISE_FRAME_SAMPLES; i++) { const v = heap[inputIndex + i] / RNNOISE_PCM_SCALE; sum += v * v; }
     return Math.max(SILENCE_FLOOR_DB, 10 * Math.log10(sum / RNNOISE_FRAME_SAMPLES));
   };
-  return { score, denoisedEnergyDb };
+  const denoisedFrame = () => {
+    const out = new Float32Array(RNNOISE_FRAME_SAMPLES);
+    const heap = wasm.HEAPF32;
+    for (let i = 0; i < RNNOISE_FRAME_SAMPLES; i++) out[i] = heap[inputIndex + i] / RNNOISE_PCM_SCALE;
+    return out;
+  };
+  return { score, denoisedEnergyDb, denoisedFrame };
 };

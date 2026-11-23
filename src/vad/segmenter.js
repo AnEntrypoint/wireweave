@@ -15,72 +15,68 @@ export class ClipSegmenter {
     this.active = false;
     this.preroll = [];
     this.confirm = 0;
-    this.scores = [];
-    this.energies = [];
-    this.frames = [];
+    this.features = [];
+    this.pcm = [];
     this.belowStop = 0;
     this.voicedCount = 0;
     this.energySum = 0;
     this.energySumSquares = 0;
-    this.energyCount = 0;
     this.startIndex = 0;
   }
 
-  _trackEnergy(energyDb) {
-    if (energyDb === null) return;
-    this.energySum += energyDb;
-    this.energySumSquares += energyDb * energyDb;
-    this.energyCount++;
+  _track(feature) {
+    if (feature.smoothed >= this.config.voicedFrameThreshold) this.voicedCount++;
+    this.energySum += feature.energyDb;
+    this.energySumSquares += feature.energyDb * feature.energyDb;
   }
 
   get _energyStdDb() {
-    if (!this.energyCount) return Infinity;
-    const mean = this.energySum / this.energyCount;
-    return Math.sqrt(Math.max(0, this.energySumSquares / this.energyCount - mean * mean));
+    const n = this.features.length;
+    if (!n) return Infinity;
+    const mean = this.energySum / n;
+    return Math.sqrt(Math.max(0, this.energySumSquares / n - mean * mean));
   }
 
   get liveVoiced() {
     if (!this.active) return false;
-    const core = this.scores.length - this.belowStop;
+    const core = this.features.length - this.belowStop;
     if (core <= 0) return false;
     const voicedLongEnough = this.voicedCount * FRAME_MS >= this.config.liveMinVoicedMs && this.voicedCount / core >= this.config.minVoicedRatio;
     const settled = core * FRAME_MS >= this.config.liveStdAfterMs;
     return voicedLongEnough && (!settled || this._energyStdDb >= this.config.minEnergyStdDb);
   }
 
-  push(smoothed, frame, frameIndex, energyDb = null) {
+  push(feature, frame, frameIndex) {
     const copy = this.keepPcm ? Float32Array.from(frame) : null;
-    if (!this.active) return this._idle(smoothed, copy, frameIndex, energyDb);
-    return this._active(smoothed, copy, energyDb);
+    return this.active ? this._active(feature, copy) : this._idle(feature, copy, frameIndex);
   }
 
-  _idle(smoothed, copy, frameIndex, energyDb) {
+  _idle(feature, copy, frameIndex) {
     if (this.keepPcm) {
       this.preroll.push(copy);
       if (this.preroll.length > this.prerollFrames) this.preroll.shift();
     }
-    this.confirm = smoothed >= this.config.startThreshold ? this.confirm + 1 : 0;
+    this.confirm = feature.smoothed >= this.config.startThreshold ? this.confirm + 1 : 0;
     if (this.confirm < this.config.startConfirmFrames) return null;
     this.active = true;
     this.belowStop = 0;
-    this.scores = [smoothed];
-    this.voicedCount = smoothed >= this.config.voicedFrameThreshold ? 1 : 0;
-    this.energies = [energyDb];
-    this._trackEnergy(energyDb);
-    this.frames = this.keepPcm ? this.preroll.slice() : [];
+    this.features = [feature];
+    this.voicedCount = 0;
+    this.energySum = 0;
+    this.energySumSquares = 0;
+    this._track(feature);
+    this.pcm = this.keepPcm ? this.preroll.slice() : [];
     this.startIndex = frameIndex;
     this.preroll = [];
     return null;
   }
 
-  _active(smoothed, copy, energyDb) {
-    this.scores.push(smoothed);
-    this.energies.push(energyDb);
-    this._trackEnergy(energyDb);
-    if (smoothed >= this.config.voicedFrameThreshold) this.voicedCount++;
-    if (this.keepPcm) this.frames.push(copy);
-    this.belowStop = smoothed < this.config.stopThreshold ? this.belowStop + 1 : 0;
-    if (this.belowStop >= this.hangoverFrames || this.scores.length >= this.maxClipFrames) return this._finish();
+  _active(feature, copy) {
+    this.features.push(feature);
+    this._track(feature);
+    if (this.keepPcm) this.pcm.push(copy);
+    this.belowStop = feature.smoothed < this.config.stopThreshold ? this.belowStop + 1 : 0;
+    if (this.belowStop >= this.hangoverFrames || this.features.length >= this.maxClipFrames) return this._finish();
     return null;
   }
 
@@ -89,16 +85,14 @@ export class ClipSegmenter {
   }
 
   _finish() {
-    const core = this.scores.slice(0, this.scores.length - this.belowStop);
-    const coreEnergies = this.energies.slice(0, core.length);
-    const verdict = judgeClip(core, this.config, coreEnergies.every((e) => e !== null) ? coreEnergies : null);
+    const core = this.features.slice(0, this.features.length - this.belowStop);
     const clip = {
-      ...verdict,
+      ...judgeClip(core, this.config),
       startFrame: this.startIndex,
       endFrame: this.startIndex + core.length,
       durationMs: core.length * FRAME_MS,
-      scores: core,
-      pcm: this.keepPcm ? joinFrames(this.frames) : null
+      frames: core,
+      pcm: this.keepPcm ? joinFrames(this.pcm) : null
     };
     this.reset();
     return clip;

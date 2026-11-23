@@ -64,7 +64,7 @@ export class VoiceSession extends EventTarget {
     this.actor = null;
     this.channelName = ''; this.roomId = '';
     this.peers = new Map(); this.participants = new Map();
-    this.localStream = null; this.cameraStream = null;
+    this.localStream = null; this.cameraStream = null; this.screenSharing = false;
     this.heartbeat = null; this.joinTs = 0;
     this.muted = false; this.deafened = false;
     this.sfu = { mode: 'mesh', hub: null, hubLostAt: null, rttMatrix: new Map(), electionTimer: null, statsInterval: null, actor: null };
@@ -243,6 +243,26 @@ export class VoiceSession extends EventTarget {
     this.cameraStream = stream;
     const track = stream.getVideoTracks()[0];
     track.onended = () => { if (this.cameraStream === stream) this.setCamera(false); };
+    this._setLocalVideo(true);
+    for (const [pk, peer] of this.peers) this._attachCamera(peer, pk);
+  }
+
+  async setScreen(on) {
+    const want = !!on;
+    if (want === !!this.screenSharing) return;
+    if (!want) {
+      this.screenSharing = false;
+      if (this.cameraStream) await this.setCamera(false);
+      return;
+    }
+    if (!this.md || typeof this.md.getDisplayMedia !== 'function') { this._emit('media-warning', { message: 'screen sharing is not available in this browser' }); return; }
+    if (this.cameraStream) await this.setCamera(false);
+    let stream;
+    try { stream = await this.md.getDisplayMedia({ video: { frameRate: 15 }, audio: false }); }
+    catch (e) { this._emit('media-warning', { message: 'screen sharing was not started: ' + e.message }); return; }
+    this.cameraStream = stream;
+    this.screenSharing = true;
+    stream.getVideoTracks()[0].onended = () => { if (this.cameraStream === stream) this.setScreen(false); };
     this._setLocalVideo(true);
     for (const [pk, peer] of this.peers) this._attachCamera(peer, pk);
   }
@@ -720,17 +740,18 @@ export class VoiceSession extends EventTarget {
   _wirePeer(peer, peerPubkey, fsmActor, isOfferer) {
     const pc = peer.pc;
     pc.ontrack = (ev) => {
+      const stream = ev.streams[0] || new MediaStream([ev.track]);
       if (ev.track.kind === 'video') {
         ev.track.onunmute = () => this._setRemoteVideo(peerPubkey, true);
         ev.track.onmute = () => this._setRemoteVideo(peerPubkey, false);
         ev.track.onended = () => this._setRemoteVideo(peerPubkey, false);
-        this.onVideoTrack?.({ peerPubkey, track: ev.track, stream: ev.streams[0] });
+        this.onVideoTrack?.({ peerPubkey, track: ev.track, stream });
         return;
       }
-      this.onAudioTrack?.({ peerPubkey, track: ev.track, stream: ev.streams[0], peer });
+      this.onAudioTrack?.({ peerPubkey, track: ev.track, stream, peer });
       this._applyPlaybackMute();
-      peer.remoteStream = ev.streams[0];
-      this._attachAnalyzer(peerPubkey, ev.streams[0]);
+      peer.remoteStream = stream;
+      this._attachAnalyzer(peerPubkey, stream);
       try { ev.receiver.playoutDelayHint = 0.02; } catch {}
       ev.track.onended = () => { if (peer.fsm.getSnapshot().matches('connected')) this._doIceRestart(peer, peerPubkey, fsmActor); };
       if (!peer._stallInterval) peer._stallInterval = setInterval(() => this._checkStall(peer, peerPubkey, fsmActor), STALL_CHECK);

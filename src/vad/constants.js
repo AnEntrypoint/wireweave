@@ -13,9 +13,17 @@ export const HANGOVER_MS = 1000;
 export const PREROLL_MS = 200;
 export const MAX_CLIP_MS = 30000;
 
-export const MIN_VOICED_MS = 550;
+export const MIN_VOICED_MS = 400;
 export const MIN_VOICED_RATIO = 0.5;
 export const MIN_ENERGY_STD_DB = 7;
+export const PERIODIC_THRESHOLD = 0.5;
+export const MIN_ENERGY_PEAKS_PER_SECOND = 0;
+export const MIN_PERIODIC_RATIO = 0.5;
+export const MAX_PERIODIC_RATIO = 0.97;
+export const MIN_PITCH_STEPS = 8;
+export const MIN_PITCH_STEP_MEDIAN = 0;
+export const MAX_PITCH_STEP_MEDIAN = 0.5;
+export const MAX_PITCH_STD_SEMITONES = 9;
 export const LIVE_MIN_VOICED_MS = 250;
 export const LIVE_STD_AFTER_MS = 400;
 export const SILENCE_FLOOR_DB = -120;
@@ -36,6 +44,14 @@ export const DEFAULT_VAD_CONFIG = Object.freeze({
   minVoicedMs: MIN_VOICED_MS,
   minVoicedRatio: MIN_VOICED_RATIO,
   minEnergyStdDb: MIN_ENERGY_STD_DB,
+  periodicThreshold: PERIODIC_THRESHOLD,
+  minEnergyPeaksPerSecond: MIN_ENERGY_PEAKS_PER_SECOND,
+  minPeriodicRatio: MIN_PERIODIC_RATIO,
+  maxPeriodicRatio: MAX_PERIODIC_RATIO,
+  minPitchSteps: MIN_PITCH_STEPS,
+  minPitchStepMedian: MIN_PITCH_STEP_MEDIAN,
+  maxPitchStepMedian: MAX_PITCH_STEP_MEDIAN,
+  maxPitchStdSemitones: MAX_PITCH_STD_SEMITONES,
   liveMinVoicedMs: LIVE_MIN_VOICED_MS,
   liveStdAfterMs: LIVE_STD_AFTER_MS
 });

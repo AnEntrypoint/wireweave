@@ -21,6 +21,7 @@ export class ThreadScheduler extends EventTarget {
     this.lanes = new Map();
     this.known = new Set();
     this.history = [];
+    this.expired = [];
     this.remoteLive = new Map();
     this.captures = new Map();
     this.pendingCaptures = 0;
@@ -48,7 +49,8 @@ export class ThreadScheduler extends EventTarget {
       current: this.current ? this._view(this.current.clip) : null,
       queueLength: this._queueLength(),
       lanes: [...this.lanes].map(([speaker, lane]) => ({ speaker, name: lane.name, clips: lane.clips.map((c) => this._view(c)) })),
-      history: this.history.map((c) => this._view(c))
+      history: this.history.map((c) => this._view(c)),
+      expired: this.expired.map((c) => this._view(c))
     };
   }
 
@@ -68,6 +70,12 @@ export class ThreadScheduler extends EventTarget {
     if (!clip || !clip.speaker || !clip.id) return false;
     if (this.known.has(clip.id)) return false;
     this.known.add(clip.id);
+    if (clip.expired) {
+      this.expired.push(clip);
+      this._emit('clip-expired', this._view(clip));
+      this._changed();
+      return true;
+    }
     const lane = this._lane(clip.speaker, clip.name);
     const seq = Number.isFinite(clip.seq) ? clip.seq : lane.nextSeq;
     lane.nextSeq = Math.max(lane.nextSeq, seq + 1);
@@ -274,25 +282,45 @@ export const buildKeepTags = ({ channelHex, url, mime, durationMs, speaker, seq 
   ['imeta', 'url ' + url, 'm ' + mime, 'duration ' + Math.round(durationMs), 'speaker ' + speaker, 'seq ' + seq]
 ];
 
+const imetaFields = (imeta) => Object.fromEntries(imeta.slice(1).map((entry) => { const i = entry.indexOf(' '); return [entry.slice(0, i), entry.slice(i + 1)]; }));
+
 export const parseKeptClipEvent = (event) => {
   if (!event || event.kind !== VOICE_EVENT_KIND) return null;
   const tags = event.tags || [];
   if (!tags.some((t) => t[0] === 't' && t[1] === VOICE_TAG_VALUE)) return null;
   const imeta = tags.find((t) => t[0] === 'imeta');
-  if (!imeta) return null;
-  const fields = Object.fromEntries(imeta.slice(1).map((entry) => { const i = entry.indexOf(' '); return [entry.slice(0, i), entry.slice(i + 1)]; }));
-  if (!fields.url || !fields.m || !fields.m.startsWith('audio/')) return null;
+  const fields = imeta ? imetaFields(imeta) : {};
+  const playable = !!fields.url && typeof fields.m === 'string' && fields.m.startsWith('audio/');
+  const seq = Number(fields.seq);
   return {
     id: event.id,
     speaker: fields.speaker || event.pubkey,
-    seq: Number(fields.seq),
+    seq: Number.isFinite(seq) && fields.seq !== undefined ? seq : null,
     durationMs: Number(fields.duration) || 0,
-    mime: fields.m,
-    url: fields.url,
-    source: 'keep',
+    mime: playable ? fields.m : null,
+    url: playable ? fields.url : null,
+    expired: !playable,
+    source: 'kept',
     ts: event.created_at
   };
 };
+
+export const keptClipsFromEvents = (events) => (events || [])
+  .map(parseKeptClipEvent)
+  .filter(Boolean)
+  .sort((a, b) => a.ts - b.ts || (a.seq ?? 0) - (b.seq ?? 0));
+
+const defaultProbe = async (url) => {
+  const res = await fetch(url, { method: 'HEAD' });
+  return res.ok;
+};
+
+export const verifyKeptClips = async (clips, probe = defaultProbe) => Promise.all(clips.map(async (clip) => {
+  if (clip.expired) return clip;
+  let reachable = false;
+  try { reachable = await probe(clip.url); } catch { reachable = false; }
+  return reachable ? clip : { ...clip, expired: true };
+}));
 
 const speakerOf = (voice, key) => {
   const entry = voice.participants.get('nostr-' + key.slice(0, SPEAKER_KEY_LENGTH));
@@ -313,7 +341,8 @@ export const bindVoiceThread = ({ voice, thread, media = null, channelId = '', k
   const finalizedListener = (e) => {
     if (!keepClips || !media || e.detail.kind !== 'outbound') return;
     const { segment } = e.detail;
-    const file = new File([segment.bytes], 'voice-' + segment.id + '.webm', { type: segment.mime });
+    const extension = segment.mime.includes('ogg') ? '.ogg' : '.webm';
+    const file = new File([segment.bytes], 'voice-' + segment.id + extension, { type: segment.mime });
     media.sendAudioClip(file, { channelId, serverId: voice.serverId, durationMs: segment.dur, speaker: segment.from, seq: segment.seq }).catch(() => {});
   };
   voice.addEventListener('speaker', speakerListener);
@@ -347,5 +376,7 @@ registerProtocol({
   eventKinds: [VOICE_EVENT_KIND],
   createVoiceThread,
   parseKeptClipEvent,
+  keptClipsFromEvents,
+  verifyKeptClips,
   buildKeepTags
 });
