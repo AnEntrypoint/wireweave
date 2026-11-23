@@ -27,6 +27,7 @@ export { Unread, createUnread } from './unread.js';
 export { Forum, createForum } from './forum.js';
 export { createWireweave } from './wireweave.js';
 export * as debug from './debug.js';
+export { Account, createAccount } from './account.js';
 export { Feedback, createFeedback } from './feedback.js';
 export { createFeedbackTools, feedbackToolDefinitions } from './feedback-tools.js';
 export { mountFeedbackForm } from './feedback-form.js';

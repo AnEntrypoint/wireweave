@@ -17,6 +17,14 @@ const FALLBACK_RELAYS = [
   'wss://relay.0xchat.com'
 ];
 
+export const normalizeRelayUrl = (input) => {
+  let u = String(input || '').trim();
+  if (!u) return '';
+  if (!/^wss?:\/\//i.test(u)) return '';
+  try { const x = new URL(u); if (!x.hostname) return ''; u = x.protocol + '//' + x.host + (x.pathname === '/' ? '' : x.pathname); } catch { return ''; }
+  return u.replace(/\/$/, '');
+};
+
 const SEEN_MAX = 10000;
 const PENDING_MAX = 500;
 const PENDING_TTL_MS = 120000;
@@ -782,6 +790,58 @@ export class RelayPool extends EventTarget {
     const out = [];
     for (const [url, r] of this.relays) out.push({ url, status: r.status, latencyMs: r.latencyMs });
     return out;
+  }
+
+  defaultRelays() { return [...DEFAULT_RELAYS]; }
+
+  relayList() { return [...this.urls]; }
+
+  addRelay(url) {
+    const clean = normalizeRelayUrl(url);
+    if (!clean) throw new Error('Relay URL must start with wss:// or ws://');
+    if (this.urls.includes(clean)) return false;
+    this.urls.push(clean);
+    if (!this.health.has(clean)) this.health.set(clean, new RelayHealth(clean));
+    this._open(clean);
+    this._emit('relays', { urls: this.relayList() });
+    return true;
+  }
+
+  removeRelay(url) {
+    const i = this.urls.indexOf(url);
+    if (i < 0) return false;
+    if (this.urls.length === 1) throw new Error('Keep at least one relay');
+    this.urls.splice(i, 1);
+    const t = this._reconnectTimers.get(url);
+    if (t) { clearTimeout(t); this._reconnectTimers.delete(url); }
+    const r = this.relays.get(url);
+    if (r) {
+      if (r._connectTimer) clearTimeout(r._connectTimer);
+      if (r.ws) {
+        r.ws.onclose = null; r.ws.onerror = null; r.ws.onopen = null; r.ws.onmessage = null;
+        if (typeof r.ws.on === 'function') r.ws.on('error', () => {});
+        try { r.ws.close(); } catch {}
+      }
+      this.relays.delete(url);
+    }
+    this._emit('relays', { urls: this.relayList() });
+    return true;
+  }
+
+  setRelays(urls) {
+    const next = [...new Set((urls || []).map(normalizeRelayUrl).filter(Boolean))];
+    if (!next.length) throw new Error('Keep at least one relay');
+    for (const u of next) this.addRelay(u);
+    for (const u of [...this.urls]) if (!next.includes(u)) this.removeRelay(u);
+    return this.relayList();
+  }
+
+  reconnectRelay(url) {
+    if (!this.urls.includes(url)) return false;
+    const r = this.relays.get(url);
+    if (r && r.ws && r.ws.readyState === 1) return true;
+    this._open(url);
+    return true;
   }
 
   heal() {

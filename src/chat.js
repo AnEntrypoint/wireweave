@@ -36,13 +36,13 @@ const PROFILE_BATCH_MS = 150;
 const PROFILE_BATCH_MAX = 40;
 
 export class Chat extends EventTarget {
-  constructor({ relayPool, auth, getChannelContext = () => ({ channelId: null, serverId: '' }), isAdmin = () => false, isRoleOf = () => 'member', bans = null, mutes = null, getEventHash = null, powDifficulty = 0 }) {
+  constructor({ relayPool, auth, getChannelContext = () => ({ channelId: null, serverId: '' }), isAdmin = () => false, isRoleOf = () => 'member', bans = null, mutes = null, getEventHash = null, powDifficulty = 0, getNick = null }) {
     super();
     if (!relayPool || !auth) throw new Error('Chat: relayPool + auth required');
     this.pool = relayPool; this.auth = auth;
     this.getChannelContext = getChannelContext; this.isAdmin = isAdmin; this.isRoleOf = isRoleOf;
 
-    this.bans = bans; this.mutes = mutes;
+    this.bans = bans; this.mutes = mutes; this.getNick = getNick;
 
     this.getEventHash = getEventHash; this.powDifficulty = powDifficulty;
     this.activeChannelId = null;
@@ -248,6 +248,8 @@ export class Chat extends EventTarget {
   }
 
   resolveProfile(pubkey) {
+    const nick = this.getNick ? this.getNick(pubkey) : '';
+    if (nick) return nick;
     const p = this.profiles.get(pubkey);
     if (p) return p.name || this.auth.npubShort(pubkey);
     this._fetchProfile(pubkey);

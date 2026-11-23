@@ -25,6 +25,7 @@ import { createUnread } from './unread.js';
 import { createForum } from './forum.js';
 import { register } from './debug.js';
 import { createFeedback } from './feedback.js';
+import { createAccount } from './account.js';
 
 export const createWireweave = ({
   nostrTools,
@@ -32,6 +33,7 @@ export const createWireweave = ({
   storage = (typeof localStorage !== 'undefined' ? localStorage : null),
   extension = (typeof window !== 'undefined' ? window.nostr : null),
   relays = ['wss://relay.damus.io', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.nostr.band', 'wss://nostr.wine', 'wss://offchain.pub'],
+  prefsIO = null,
   mediaDevices = (typeof navigator !== 'undefined' ? navigator.mediaDevices : null),
   WebSocketImpl = (typeof WebSocket !== 'undefined' ? WebSocket : null)
 } = {}) => {
@@ -71,13 +73,16 @@ export const createWireweave = ({
     isAdmin: (sid) => roles.isAdmin(sid),
     isRoleOf: (sid, pk) => roles.getRole(sid, pk),
     bans, mutes,
-    getEventHash: nostrTools.getEventHash
+    getEventHash: nostrTools.getEventHash,
+    getNick: (pk) => (account && servers ? account.nickFor(pk, servers.currentServerId || '') : '')
   });
+  const account = createAccount({ relayPool: pool, auth, presence, mutes, chat, nostrTools, storage, prefsIO });
 
   const servers = createServers({
     relayPool: pool, auth, storage,
     onSwitch: async (serverId) => {
       roles.subscribe(serverId);
+      account.watchServerNicks(serverId);
       settings.subscribe(serverId);
       bans.subscribe(serverId);
       pages.subscribe(serverId);
@@ -133,7 +138,7 @@ export const createWireweave = ({
   };
 
   const api = {
-    pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat, reactions, mutes, unread, forum, pins, selfRoles, presence, membership, events, polls,
+    pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat, reactions, mutes, unread, forum, pins, selfRoles, presence, membership, events, polls, account,
     get voice() { return voice; },
     ensureVoice,
     get dm() { return dm; },
