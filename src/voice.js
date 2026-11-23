@@ -233,7 +233,7 @@ export class VoiceSession extends EventTarget {
     if (!want) {
       this.cameraStream.getTracks().forEach(t => t.stop());
       this.cameraStream = null;
-      for (const peer of this.peers.values()) peer.pc?.getTransceivers().forEach(t => { if (t.receiver.track.kind === 'video' && t.sender.track) t.sender.replaceTrack(null).catch(() => {}); });
+      for (const [pk, peer] of this.peers) this._detachCamera(peer, pk);
       this._setLocalVideo(false);
       return;
     }
@@ -269,8 +269,17 @@ export class VoiceSession extends EventTarget {
 
   _setLocalVideo(on) {
     const local = this.participants.get('local'); if (local) local.hasVideo = on;
+    for (const peer of this.peers.values()) this._dcSendJSON(peer, { type: 'video', on: !!on });
     this._emit('local-video', { stream: on ? this.cameraStream : null });
     this._emit('participants', { list: this.getParticipants() });
+  }
+
+  _detachCamera(peer, peerPubkey) {
+    const tr = peer.pc?.getTransceivers().find(t => t.receiver.track.kind === 'video' && t.sender.track);
+    if (!tr) return;
+    tr.sender.replaceTrack(null).catch(() => {});
+    tr.direction = 'recvonly';
+    this._renegotiate(peer, peerPubkey);
   }
 
   _attachCamera(peer, peerPubkey) {
@@ -528,7 +537,8 @@ export class VoiceSession extends EventTarget {
       const tag = data[3]; const body = data.slice(4);
       if (tag !== 'J') return;
       let obj; try { obj = JSON.parse(body); } catch { return; }
-      if (obj.type === 'seg-meta') {
+      if (obj.type === 'video') this._setRemoteVideo(peerPubkey, !!obj.on);
+      else if (obj.type === 'seg-meta') {
         peer._dcInbox.set(obj.segId, { meta: obj, parts: new Array(obj.total), received: 0 });
       } else if (obj.type === 'seg-end') {
         const inbox = peer._dcInbox.get(obj.segId); if (!inbox) return;

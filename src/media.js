@@ -1,3 +1,4 @@
+import { hexChannelId } from './channel-hex.js';
 import { buildKeepTags } from './modules/voice-thread.js';
 
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -13,11 +14,6 @@ const BLOSSOM_SERVERS = [
 const hashFile = async (file) => {
   const buf = await file.arrayBuffer();
   const h = await crypto.subtle.digest('SHA-256', buf);
-  return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('');
-};
-
-const hexChannelId = async (channelId, serverId) => {
-  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode((serverId || 'default') + ':' + channelId));
   return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('');
 };
 

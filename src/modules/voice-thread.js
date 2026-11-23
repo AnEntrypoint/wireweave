@@ -1,4 +1,5 @@
 import { registerProtocol } from './registry.js';
+import { hexChannelId } from '../channel-hex.js';
 
 export const VOICE_THREAD_TYPE = 'voice-thread';
 export const VOICE_EVENT_KIND = 42;
@@ -64,6 +65,16 @@ export class ThreadScheduler extends EventTarget {
     if (!lane) { lane = { name: name || speaker.slice(0, 8), clips: [], nextSeq: 1 }; this.lanes.set(speaker, lane); }
     else if (name) lane.name = name;
     return lane;
+  }
+
+  addHistory(clip) {
+    if (!clip || !clip.speaker || !clip.id || this.known.has(clip.id)) return false;
+    this.known.add(clip.id);
+    this._lane(clip.speaker, clip.name);
+    if (clip.expired) this.expired.push(clip);
+    else this.history.push(clip);
+    this._changed();
+    return true;
   }
 
   enqueue(clip) {
@@ -322,6 +333,21 @@ export const verifyKeptClips = async (clips, probe = defaultProbe) => Promise.al
   return reachable ? clip : { ...clip, expired: true };
 }));
 
+export const fetchKeptClips = ({ relayPool, channelHex, limit = 50, timeoutMs = 6000 }) => new Promise((resolve) => {
+  const events = [];
+  const subId = 'vt-kept-' + channelHex.slice(0, 12) + '-' + Math.random().toString(36).slice(2, 7);
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    relayPool.unsubscribe(subId);
+    resolve(keptClipsFromEvents(events));
+  };
+  const timer = setTimeout(finish, timeoutMs);
+  relayPool.subscribe(subId, [{ kinds: [VOICE_EVENT_KIND], '#e': [channelHex], '#t': [VOICE_TAG_VALUE], limit }], (event) => { if (!events.find((e) => e.id === event.id)) events.push(event); }, finish);
+});
+
 const speakerOf = (voice, key) => {
   const entry = voice.participants.get('nostr-' + key.slice(0, SPEAKER_KEY_LENGTH));
   return entry?.identity || key.slice(0, 8);
@@ -378,5 +404,7 @@ registerProtocol({
   parseKeptClipEvent,
   keptClipsFromEvents,
   verifyKeptClips,
+  fetchKeptClips,
+  hexChannelId,
   buildKeepTags
 });
