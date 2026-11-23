@@ -1,3 +1,5 @@
+import { replaceableTs } from './dtag.js';
+
 const EVENT_KIND = 31923;
 const RSVP_KIND = 31925;
 const DELETE_KIND = 5;
@@ -36,7 +38,7 @@ export class Events extends EventTarget {
     if (!event || !event.id || !event.addr) throw new Error('Events: event id and address required');
     const signed = await this.auth.sign({
       kind: RSVP_KIND,
-      created_at: Math.floor(Date.now() / 1000),
+      created_at: replaceableTs(),
       tags: [['d', randomId()], ['a', event.addr], ['e', event.id], ['status', accepted ? 'accepted' : 'declined']],
       content: ''
     });

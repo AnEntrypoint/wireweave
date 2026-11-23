@@ -1,5 +1,6 @@
 import { replaceableTs } from './dtag.js';
 import { createStreamTap } from './vad/stream-tap.js';
+import { deriveRoomId } from './voice-room-id.js';
 
 
 const DEFAULT_ICE_SERVERS = [
@@ -39,11 +40,6 @@ const OPUS_BITRATE_LADDER = {
   max: 64000
 };
 const DEFAULT_AUDIO_QUALITY = 'high';
-
-const deriveRoomId = async (serverId, channel) => {
-  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode((serverId || 'default') + ':voice:' + channel));
-  return 'zellous' + Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
-};
 
 const defaultCreatePeerConnection = (config) => new RTCPeerConnection(config);
 
@@ -145,6 +141,7 @@ export class VoiceSession extends EventTarget {
     this.actor.send({ type: 'connect' });
     this.channelName = channelName;
     this.joinTs = Math.floor(Date.now() / 1000);
+    this.userMuted = false;
     this.displayName = displayName;
     try {
       const roomId = await deriveRoomId(this.serverId, channelName);
@@ -225,7 +222,7 @@ export class VoiceSession extends EventTarget {
     this._emit('disconnected', {});
   }
 
-  toggleMic() { return this.setMuted(!this.muted); }
+  toggleMic() { const r = this.setMuted(!this.muted); this.userMuted = this.muted; this._scheduleMutePresence(); return r; }
 
   async setCamera(on) {
     const want = !!on;
@@ -603,7 +600,7 @@ export class VoiceSession extends EventTarget {
     const signed = await this.auth.sign({
       kind: 30078, created_at: replaceableTs(),
       tags: [['d', 'zellous-voice:' + this.roomId], ['action', action], ['channel', this.channelName], ['server', this.serverId]],
-      content: JSON.stringify({ action, name: this.displayName, channel: this.channelName, ts: Date.now(), rttScores, capScores, reflexive, uplinkKbps })
+      content: JSON.stringify({ action, name: this.displayName, channel: this.channelName, muted: !!this.userMuted, ts: Date.now(), rttScores, capScores, reflexive, uplinkKbps })
     });
     this.pool.publish(signed);
   }
@@ -628,6 +625,12 @@ export class VoiceSession extends EventTarget {
 
   _reflexiveAddrs() {
     return this._lastReflexive ? [this._lastReflexive] : [];
+  }
+
+  _scheduleMutePresence() {
+    if (!this.roomId) return;
+    clearTimeout(this._mutePresenceTimer);
+    this._mutePresenceTimer = setTimeout(() => { if (this.roomId) this._publishPresence('mute').catch(() => {}); }, 400);
   }
 
   _startHeartbeat() { this._stopHeartbeat(); this.heartbeat = setInterval(() => { if (this.actor?.getSnapshot().matches('connected')) this._publishPresence('heartbeat'); }, HEARTBEAT); }
@@ -688,6 +691,8 @@ export class VoiceSession extends EventTarget {
       this._sfuMaybeElect();
       if (this._sfuShouldHaveConnectionTo(event.pubkey) && !this.peers.has(event.pubkey)) this._maybeConnect(event.pubkey);
     }
+    const remote = this.participants.get(shortId);
+    if (remote && typeof data.muted === 'boolean' && data.action !== 'leave') remote.isMuted = data.muted;
     this._emit('participants', { list: this.getParticipants() });
   }
 

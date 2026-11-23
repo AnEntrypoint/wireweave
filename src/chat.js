@@ -70,8 +70,8 @@ export class Chat extends EventTarget {
     return this._sendTimes[0] + this.rateLimitWindowMs - now;
   }
 
-  async send(content, { announcement = false, replyTo = null, previews = [] } = {}) {
-    const { channelId, serverId, channelType } = this.getChannelContext();
+  async send(content, { announcement = false, replyTo = null, previews = [], _ctx = null, _queued = false } = {}) {
+    const { channelId, serverId, channelType } = _ctx || this.getChannelContext();
     if (!this.auth.isLoggedIn()) {
       this._emit('send-blocked', { reason: 'not-signed-in' });
       return;
@@ -92,9 +92,17 @@ export class Chat extends EventTarget {
     }
     const trimmed = content.trim(); if (!trimmed) return;
     const retryAfter = this.rateLimitRetryAfterMs();
-    if (retryAfter > 0) {
-      this._emit('rate-limited', { retryAfterMs: retryAfter });
-      return;
+    if (!_queued && (retryAfter > 0 || this._rateQueued > 0)) {
+      this._rateQueued = (this._rateQueued || 0) + 1;
+      this._emit('rate-limited', { retryAfterMs: retryAfter, queued: true });
+      const ctx = { channelId, serverId, channelType };
+      this._rateChain = (this._rateChain || Promise.resolve()).then(async () => {
+        const wait = this.rateLimitRetryAfterMs();
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        this._rateQueued--;
+        return this.send(content, { announcement, replyTo, previews, _ctx: ctx, _queued: true });
+      });
+      return this._rateChain;
     }
     this._sendTimes.push(Date.now());
     const chanHex = await hexChannelId(channelId, serverId);

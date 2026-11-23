@@ -37,9 +37,14 @@ export class Reactions extends EventTarget {
     const m = this.byTarget.get(targetEventId);
     if (!m) return [];
     const counts = new Map();
-    for (const { content } of m.values()) counts.set(content, (counts.get(content) || 0) + 1);
+    const users = new Map();
+    for (const [pubkey, { content }] of m) {
+      counts.set(content, (counts.get(content) || 0) + 1);
+      if (!users.has(content)) users.set(content, []);
+      users.get(content).push(pubkey);
+    }
     return Array.from(counts.entries()).map(([content, count]) => ({
-      content, count,
+      content, count, users: users.get(content),
       mine: m.get(this.auth.pubkey)?.content === content
     }));
   }

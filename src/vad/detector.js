@@ -1,4 +1,4 @@
-import { DEFAULT_VAD_CONFIG, FRAME_LOG_MS, FRAME_MS, RNNOISE_FRAME_SAMPLES, RNNOISE_SAMPLE_RATE, SILENCE_FLOOR_DB } from './constants.js';
+import { DEFAULT_VAD_CONFIG, resolveVadProfile, FRAME_LOG_MS, FRAME_MS, RNNOISE_FRAME_SAMPLES, RNNOISE_SAMPLE_RATE, SILENCE_FLOOR_DB } from './constants.js';
 import { FramePipeline } from './frame-pipeline.js';
 import { createVoiceScorer } from './rnnoise-score.js';
 import { ClipSegmenter } from './segmenter.js';
@@ -11,8 +11,8 @@ const frameEnergyDb = (frame) => {
   return Math.max(SILENCE_FLOOR_DB, 10 * Math.log10(sum / RNNOISE_FRAME_SAMPLES));
 };
 
-export const createVoiceDetector = ({ loader, sampleRate = RNNOISE_SAMPLE_RATE, config = {}, keepPcm = false, onClip = null, onFrame = null, now = () => Date.now() }) => {
-  const cfg = { ...DEFAULT_VAD_CONFIG, ...config };
+export const createVoiceDetector = ({ loader, sampleRate = RNNOISE_SAMPLE_RATE, config = {}, profile = null, keepPcm = false, onClip = null, onFrame = null, now = () => Date.now() }) => {
+  const cfg = { ...DEFAULT_VAD_CONFIG, ...(profile ? resolveVadProfile(profile) : {}), ...config };
   const segmenter = new ClipSegmenter({ config: cfg, keepPcm });
   const frameLog = [];
   const stats = { frames: 0, clipsKept: 0, clipsDropped: 0, droppedBeforeReady: 0 };

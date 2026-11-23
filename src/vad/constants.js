@@ -31,6 +31,22 @@ export const SILENCE_FLOOR_DB = -120;
 
 export const FRAME_LOG_MS = 60000;
 
+export const DEFAULT_VAD_PROFILE = 'balanced';
+
+export const VAD_PROFILES = Object.freeze({
+  strict: Object.freeze({ maxPitchStdSemitones: 8, minMeanVoicedEnergyDb: -38, minVoicedRatio: 0.55 }),
+  balanced: Object.freeze({ maxPitchStdSemitones: MAX_PITCH_STD_SEMITONES, minMeanVoicedEnergyDb: MIN_MEAN_VOICED_ENERGY_DB, minVoicedRatio: MIN_VOICED_RATIO }),
+  lenient: Object.freeze({ maxPitchStdSemitones: 10, minMeanVoicedEnergyDb: MIN_MEAN_VOICED_ENERGY_DB, minVoicedRatio: 0.4, minEnergyPeaksPerSecond: 2 })
+});
+
+export const VAD_PROFILE_MEASURED = Object.freeze({
+  strict: Object.freeze({ speechKeptPct: 91.2, hotMicKeptPct: 1.1 }),
+  balanced: Object.freeze({ speechKeptPct: 96.2, hotMicKeptPct: 2.3 }),
+  lenient: Object.freeze({ speechKeptPct: 97.5, hotMicKeptPct: 3.2 })
+});
+
+export const resolveVadProfile = (id) => VAD_PROFILES[id] || VAD_PROFILES[DEFAULT_VAD_PROFILE];
+
 export const msToFrames = (ms) => Math.max(0, Math.round(ms / FRAME_MS));
 
 export const DEFAULT_VAD_CONFIG = Object.freeze({

@@ -17,6 +17,8 @@ export class Unread extends EventTarget {
     this.auth = auth;
     this.storage = storage;
     this.counts = {};
+    this.pings = {};
+    this.pingTest = null;
     this.lastRead = {};
     this.boundaries = {};
     this.activeChannelId = null;
@@ -49,7 +51,11 @@ export class Unread extends EventTarget {
     }, 120);
   }
 
+  setPingTest(fn) { this.pingTest = typeof fn === 'function' ? fn : null; }
+
   countsFor() { return { ...this.counts }; }
+
+  pingsFor() { return { ...this.pings }; }
 
   countFor(channelId) { return this.counts[channelId] || 0; }
 
@@ -60,6 +66,7 @@ export class Unread extends EventTarget {
     this.activeChannelId = channelId || null;
     if (!channelId) return;
     this.counts[channelId] = 0;
+    this.pings[channelId] = 0;
     this.lastRead[channelId] = Math.max(this.lastRead[channelId] || 0, nowSec());
     this._save();
     this._emit();
@@ -69,6 +76,7 @@ export class Unread extends EventTarget {
     if (!channelId) return;
     delete this.boundaries[channelId];
     this.counts[channelId] = 0;
+    this.pings[channelId] = 0;
     this.lastRead[channelId] = Math.max(this.lastRead[channelId] || 0, nowSec());
     this._save();
     this._emit();
@@ -91,6 +99,7 @@ export class Unread extends EventTarget {
     this.stop();
     this.serverId = serverId;
     this.counts = {};
+    this.pings = {};
     this.hexToChannel = new Map();
     const hexes = [];
     for (const c of text) {
@@ -129,6 +138,7 @@ export class Unread extends EventTarget {
     }
     if ((event.created_at || 0) <= (this.lastRead[channelId] || 0)) return;
     this.counts[channelId] = (this.counts[channelId] || 0) + 1;
+    if (this.pingTest && event.pubkey !== this.auth.pubkey && this.pingTest(event)) this.pings[channelId] = (this.pings[channelId] || 0) + 1;
     this._emit();
   }
 }
