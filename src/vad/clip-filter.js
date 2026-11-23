@@ -50,7 +50,9 @@ export const clipMetrics = (frames, config = DEFAULT_VAD_CONFIG) => {
   for (let i = 1; i < span.length; i++) {
     if (periodic(span[i]) && periodic(span[i - 1])) steps.push(Math.abs(semitones(span[i].f0) - semitones(span[i - 1].f0)));
   }
+  const voicedEnergies = voicedFrames.map((f) => f.energyDb);
   return {
+    meanVoicedEnergyDb: voicedEnergies.reduce((a, b) => a + b, 0) / voicedEnergies.length,
     voicedMs: voicedFrames.length * FRAME_MS,
     voicedRatio: voicedFrames.length / span.length,
     spanMs: span.length * FRAME_MS,
@@ -68,6 +70,7 @@ export const applyThresholds = (m, config = DEFAULT_VAD_CONFIG) => {
   const reject = (reason) => ({ keep: false, reason, ...m });
   if (m.voicedMs < config.minVoicedMs) return reject('too-short');
   if (m.voicedRatio < config.minVoicedRatio) return reject('low-voiced-ratio');
+  if (m.meanVoicedEnergyDb < config.minMeanVoicedEnergyDb) return reject('too-quiet');
   if (m.energyStdDb < config.minEnergyStdDb) return reject('flat-energy');
   if (m.energyPeaksPerSecond < config.minEnergyPeaksPerSecond) return reject('unsyllabic');
   if (m.periodicRatio < config.minPeriodicRatio || m.pitchSteps < config.minPitchSteps) return reject('unpitched');

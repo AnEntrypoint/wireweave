@@ -13,6 +13,8 @@
     "./profile": "./src/profile.js",
     "./fsm": "./src/fsm.js",
     "./voice": "./src/voice.js",
+    "./vad": "./src/vad/index.js",
+    "./voice-thread": "./src/modules/voice-thread.js",
     "./data": "./src/data.js",
     "./frame": "./src/frame.js",
     "./chat": "./src/chat.js",

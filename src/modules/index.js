@@ -2,6 +2,7 @@ import './hello-room.js';
 import './voice-thread.js';
 import './sharesies.js';
 import './page-share.js';
+import './servers-discovery.js';
 
 export * from './registry.js';
 export * as sharesies from './sharesies.js';
