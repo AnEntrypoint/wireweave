@@ -7,6 +7,8 @@ const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{
 const COLOUR_RE = /^#[0-9a-f]{6}$/i;
 const IMAGE_URL_RE = /^(https:\/\/[^\s"'<>()\\]{3,1900}|data:image\/(png|jpeg|webp|gif|svg\+xml);(base64|utf8),[^\s"'<>\\]{8,60000})$/i;
 const RELAYS_KEY = 'zn_relays';
+const IDENTITIES_KEY = 'zn_identities';
+const BUNKER_KEY = 'zn_bunker';
 const SYNC_D = () => dtag('account', 'self');
 const NICK_D = (serverId) => dtag('nick', serverId);
 const DM_POLICIES = ['everyone', 'known', 'nobody'];
@@ -348,7 +350,7 @@ export class Account extends EventTarget {
   async setStatus({ status, text = '', emoji = '', durationSec = 0 }) {
     if (!this.presence) fail('Presence is unavailable');
     const t = clean(text, LIMITS.custom); const e = clean(emoji, 8);
-    const expiresAt = durationSec > 0 && (t || e) ? Math.floor(Date.now() / 1000) + durationSec : 0;
+    const expiresAt = durationSec < 0 ? this.priv.customStatus.expiresAt : durationSec > 0 && (t || e) ? Math.floor(Date.now() / 1000) + durationSec : 0;
     await this.setPrivate({ customStatus: { text: t, emoji: e, expiresAt } });
     await this._applyPresence(status);
     return { status: this.presence.statusOf(this.auth.pubkey).status, expiresAt };
@@ -573,6 +575,68 @@ export class Account extends EventTarget {
     await this.pushSync();
     this.load();
     return { oldNsec, oldNpub, newNpub, newPk };
+  }
+
+  _identityList() {
+    if (!this.storage) return [];
+    try { const v = JSON.parse(this.storage.getItem(IDENTITIES_KEY) || '[]'); return Array.isArray(v) ? v.filter((x) => x && HEX64.test(x.pk || '')) : []; } catch { return []; }
+  }
+
+  _saveIdentityList(list) { if (this.storage) this.storage.setItem(IDENTITIES_KEY, JSON.stringify(list.slice(0, 20))); }
+
+  identities() {
+    const me = this.auth.pubkey;
+    return this._identityList().filter((x) => x.pk !== me).map((x) => ({ pubkey: x.pk, kind: x.kind, name: x.name || '', npub: this.NT.nip19.npubEncode(x.pk), at: x.at || 0 }));
+  }
+
+  rememberCurrent() {
+    const pk = this.auth.pubkey;
+    if (!pk || !this.storage) return;
+    const list = this._identityList().filter((x) => x.pk !== pk);
+    const name = this.pub.name || '';
+    if (this.auth.privkey) {
+      list.unshift({ kind: 'key', pk, sk: Array.from(this.auth.privkey).map((b) => b.toString(16).padStart(2, '0')).join(''), name, at: Date.now() });
+    } else {
+      const blob = this.storage.getItem(BUNKER_KEY);
+      if (!blob) return;
+      list.unshift({ kind: 'bunker', pk, blob, name, at: Date.now() });
+    }
+    this._saveIdentityList(list);
+  }
+
+  forgetIdentity(pk) { this._saveIdentityList(this._identityList().filter((x) => x.pk !== pk)); this._emit('updated'); }
+
+  switchTo(pk) {
+    const entry = this._identityList().find((x) => x.pk === pk);
+    if (!entry) fail('That identity is not stored in this browser');
+    this.rememberCurrent();
+    if (entry.kind === 'key') {
+      if (!/^[0-9a-f]{64}$/.test(entry.sk || '')) fail('That stored key is damaged');
+      this.storage.removeItem(BUNKER_KEY);
+      const sk = new Uint8Array(32); for (let i = 0; i < 32; i++) sk[i] = parseInt(entry.sk.slice(i * 2, i * 2 + 2), 16);
+      this.auth._persist(sk, pk);
+    } else {
+      this.storage.removeItem('zn_sk'); this.storage.removeItem('zn_pk');
+      this.storage.setItem(BUNKER_KEY, entry.blob);
+    }
+    this._saveIdentityList(this._identityList().filter((x) => x.pk !== pk));
+    return { reload: true };
+  }
+
+  importAsNew(input) {
+    const text = String(input || '').trim();
+    if (!/^nsec1[0-9a-z]{40,}$/i.test(text) && !/^[0-9a-f]{64}$/i.test(text)) fail('That is not a valid nsec or 64-character hex key');
+    this.rememberCurrent();
+    try { this.auth.importKey(text); } catch { fail('That is not a valid nsec or 64-character hex key'); }
+    return { reload: true };
+  }
+
+  newThrowaway() {
+    if (!this.auth.privkey && !this.storage.getItem(BUNKER_KEY)) fail('Sign in first');
+    this.rememberCurrent();
+    if (this.storage) { this.storage.removeItem(BUNKER_KEY); }
+    this.auth.generateKey();
+    return { reload: true };
   }
 
   exportJson() {
