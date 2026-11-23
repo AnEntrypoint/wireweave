@@ -83,8 +83,8 @@ export class Servers extends EventTarget {
       const joined = JSON.parse(this.storage.getItem('zn_joined_servers') || '[]');
       safeSetItem(this.storage, this, 'zn_joined_servers', JSON.stringify(joined.filter(id => id !== serverId)));
     } catch {}
+    this._emit('updated', { servers: this.servers });
     if (this.currentServerId === serverId) await this.switchTo(null);
-    else this._emit('updated', { servers: this.servers });
   }
 
   async leave(serverId) { return this.delete(serverId); }
