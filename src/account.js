@@ -18,13 +18,27 @@ const LIMITS = { name: 32, about: 190, pronouns: 40, location: 60, website: 200,
 export const DEFAULT_PRIVATE = () => ({
   v: 1,
   updatedAt: 0,
-  privacy: { dm: 'everyone', presence: true, activity: true, receipts: true, everyonePings: true },
+  privacy: { dm: 'everyone', presence: true, activity: true, receipts: false, everyonePings: true },
   birthday: { date: '', visibility: 'hidden' },
   customStatus: { text: '', emoji: '', expiresAt: 0 },
   perServer: {},
   nip05: { id: '', ok: false, at: 0, reason: '' },
   prefs: {}
 });
+
+const CONFUSABLE = { '0': 'o', '1': 'l', 'i': 'l', '|': 'l', '5': 's', '$': 's', '3': 'e', '@': 'a', '4': 'a', '7': 't', '8': 'b', '\u0430': 'a', '\u0435': 'e', '\u043e': 'o', '\u0440': 'p', '\u0441': 'c', '\u0445': 'x', '\u0443': 'y', '\u0456': 'l', '\u0455': 's', '\u03bf': 'o', '\u03b1': 'a' };
+
+export const skeleton = (text) => String(text || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[\s._\-]+/g, '').split('').map((c) => CONFUSABLE[c] || c).join('').replace(/[^a-z0-9\u0400-\u04ff\u0370-\u03ff\u3040-\u30ff\u4e00-\u9fff]/g, '');
+
+const editDistance = (a, b) => {
+  if (a === b) return 0;
+  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0]; row[0] = i;
+    for (let j = 1; j <= b.length; j++) { const t = row[j]; row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = t; }
+  }
+  return row[b.length];
+};
 
 export const safeImageUrl = (u) => (typeof u === 'string' && IMAGE_URL_RE.test(u.trim()) ? u.trim() : '');
 
@@ -431,6 +445,8 @@ export class Account extends EventTarget {
     return !!(this.chat && this.chat.profiles.has(peer));
   }
 
+  receiptsOn() { return !!this.priv.privacy.receipts; }
+
   everyonePings() { return !!this.priv.privacy.everyonePings; }
 
   watchServerNicks(serverId) {
@@ -450,6 +466,33 @@ export class Account extends EventTarget {
     });
   }
 
+  accountNameOf(pubkey) {
+    const p = pubkey === this.auth.pubkey ? this.pub : this.chat && this.chat.profiles.get(pubkey);
+    return p && p.name ? String(p.name) : '';
+  }
+
+  checkNick(serverId, nick, memberPks = []) {
+    const want = skeleton(nick);
+    if (!want) return [];
+    const found = [];
+    const seen = new Set();
+    const pks = new Set(memberPks);
+    for (const key of this.nicks.keys()) if (key.startsWith(serverId + '|')) pks.add(key.slice(serverId.length + 1));
+    for (const pk of pks) {
+      if (pk === this.auth.pubkey || seen.has(pk)) continue;
+      const names = [this.nickFor(pk, serverId), this.accountNameOf(pk)].filter(Boolean);
+      for (const name of names) {
+        const sk = skeleton(name);
+        if (!sk) continue;
+        const exact = String(nick).trim().toLowerCase() === name.trim().toLowerCase();
+        const same = sk === want;
+        const near = !same && Math.min(sk.length, want.length) >= 5 && editDistance(sk, want) <= 1;
+        if (exact || same || near) { found.push({ pubkey: pk, name, kind: exact ? 'exact' : 'similar' }); seen.add(pk); break; }
+      }
+    }
+    return found;
+  }
+
   nickFor(pubkey, serverId) { const r = this.nicks.get((serverId || '') + '|' + pubkey); return r ? r.nick : ''; }
   serverAvatarFor(pubkey, serverId) { const r = this.nicks.get((serverId || '') + '|' + pubkey); return r ? r.avatar : ''; }
 
@@ -467,7 +510,7 @@ export class Account extends EventTarget {
 
   async setServerProfile(serverId, { nick = '', avatar = '' }) {
     if (!serverId) fail('Open a server first');
-    const n = clean(nick, LIMITS.nick); const a = avatar ? (safeImageUrl(avatar) || fail('Server picture must be an https:// image address or an uploaded image')) : '';
+    const n = clean(nick, LIMITS.nick).replace(/\s+/g, ' '); const a = avatar ? (safeImageUrl(avatar) || fail('Server picture must be an https:// image address or an uploaded image')) : '';
     const perServer = { ...this.priv.perServer };
     if (n || a) perServer[serverId] = { nick: n, avatar: a }; else delete perServer[serverId];
     this.priv = { ...this.priv, perServer };

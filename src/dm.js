@@ -1,6 +1,8 @@
 const GIFT_WRAP_KIND = 1059;
 const SEAL_KIND = 13;
 const RUMOR_KIND = 14;
+export const RECEIPT_KIND = 7;
+export const RECEIPT_TAG = 'zellous-read';
 const TWO_DAYS = 2 * 24 * 60 * 60;
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -121,6 +123,23 @@ export class DM extends EventTarget {
             throw new DMError('nip44-unsupported', 'Your Nostr extension does not provide NIP-44 encryption, so direct messages are unavailable. Use an extension with NIP-44 support or sign in with a key.');
         }
         return ext;
+    }
+
+    async sendReceipt(peerPubkey, seenUpTo) {
+        if (!this.auth.pubkey) throw new DMError('not-authenticated', 'Sign in before sending receipts');
+        if (!HEX64.test(peerPubkey || '')) throw new DMError('invalid-peer', 'Recipient public key is invalid');
+        const createdAt = Math.floor(Date.now() / 1000);
+        const tags = [['p', peerPubkey], ['t', RECEIPT_TAG], ['seen', String(Math.floor(seenUpTo))]];
+        if (this.auth.privkey) {
+            const wrap = this.NT.nip59.wrapEvent({ kind: RECEIPT_KIND, created_at: createdAt, tags, content: '' }, this.auth.privkey, peerPubkey);
+            this.pool.publish(wrap);
+            return wrap;
+        }
+        const rumor = { kind: RECEIPT_KIND, created_at: createdAt, tags, content: '', pubkey: this.auth.pubkey };
+        rumor.id = this.NT.getEventHash(rumor);
+        const wrap = await this._wrapWithExtension(this._extension(), rumor, peerPubkey);
+        this.pool.publish(wrap);
+        return wrap;
     }
 
     _rumor(content, peerPubkey, createdAt) {

@@ -26,6 +26,7 @@ import { createForum } from './forum.js';
 import { register } from './debug.js';
 import { createFeedback } from './feedback.js';
 import { createAccount } from './account.js';
+import { createRemoteSigner } from './remote-signer.js';
 
 export const createWireweave = ({
   nostrTools,
@@ -34,6 +35,7 @@ export const createWireweave = ({
   extension = (typeof window !== 'undefined' ? window.nostr : null),
   relays = ['wss://relay.damus.io', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.nostr.band', 'wss://nostr.wine', 'wss://offchain.pub'],
   prefsIO = null,
+  nip46 = null,
   mediaDevices = (typeof navigator !== 'undefined' ? navigator.mediaDevices : null),
   WebSocketImpl = (typeof WebSocket !== 'undefined' ? WebSocket : null)
 } = {}) => {
@@ -76,6 +78,7 @@ export const createWireweave = ({
     getEventHash: nostrTools.getEventHash,
     getNick: (pk) => (account && servers ? account.nickFor(pk, servers.currentServerId || '') : '')
   });
+  const remote = nip46 ? createRemoteSigner({ auth, nostrTools, nip46, storage }) : null;
   const account = createAccount({ relayPool: pool, auth, presence, mutes, chat, nostrTools, storage, prefsIO });
 
   const servers = createServers({
@@ -138,7 +141,7 @@ export const createWireweave = ({
   };
 
   const api = {
-    pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat, reactions, mutes, unread, forum, pins, selfRoles, presence, membership, events, polls, account,
+    pool, auth, fsm, message, bans, roles, settings, pages, media, channels, servers, chat, reactions, mutes, unread, forum, pins, selfRoles, presence, membership, events, polls, account, remote,
     get voice() { return voice; },
     ensureVoice,
     get dm() { return dm; },
