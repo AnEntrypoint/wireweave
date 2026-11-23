@@ -32,3 +32,4 @@ export { RemoteSigner, createRemoteSigner } from './remote-signer.js';
 export { Feedback, createFeedback } from './feedback.js';
 export { createFeedbackTools, feedbackToolDefinitions } from './feedback-tools.js';
 export { mountFeedbackForm } from './feedback-form.js';
+export * as modules from './modules/index.js';
