@@ -1,11 +1,13 @@
 import { registerProtocol } from './registry.js';
 import { hexChannelId } from '../channel-hex.js';
+import { CATCHUP, createLaneTaps, encodeWav } from '../voice-thread-audio.js';
 
 export const VOICE_THREAD_TYPE = 'voice-thread';
 export const VOICE_EVENT_KIND = 42;
 export const VOICE_TAG_VALUE = 'voice';
 
 export const THREAD_MODES = Object.freeze({ LIVE: 'live', OWN_TALK: 'own-talk', PLAYING: 'playing', PAUSED: 'paused' });
+export const LANE_STATES = Object.freeze({ LIVE: 'live', BEHIND: 'behind', CATCHING_UP: 'catching-up' });
 
 const HISTORY_LIMIT = 50;
 const MIN_ARRIVAL = -Infinity;
@@ -13,25 +15,26 @@ const MIN_ARRIVAL = -Infinity;
 const laneOrder = (a, b) => a.seq - b.seq || a.arrival - b.arrival;
 
 export class ThreadScheduler extends EventTarget {
-  constructor({ player, liveGate = () => {}, capture = null }) {
+  constructor({ player, liveGate = () => {}, ownTalkGraceMs = CATCHUP.ownTalkGraceMs, schedule = (fn, ms) => setTimeout(fn, ms), cancel = (id) => clearTimeout(id) }) {
     super();
     if (!player || typeof player.play !== 'function') throw new Error('ThreadScheduler: player required');
     this.player = player;
     this.liveGate = liveGate;
-    this.capture = capture;
     this.lanes = new Map();
     this.known = new Set();
     this.history = [];
     this.expired = [];
     this.remoteLive = new Map();
-    this.captures = new Map();
-    this.pendingCaptures = 0;
     this.current = null;
     this.localTalking = false;
     this.userPaused = false;
     this.gateOpen = true;
     this.arrivals = 0;
     this.playToken = 0;
+    this.ownTalkGraceMs = ownTalkGraceMs;
+    this.schedule = schedule;
+    this.cancel = cancel;
+    this.talkEnd = null;
   }
 
   get mode() {
@@ -42,6 +45,7 @@ export class ThreadScheduler extends EventTarget {
   }
 
   snapshot() {
+    const lanes = [...this.lanes].filter(([, lane]) => lane.seen).map(([speaker, lane]) => ({ speaker, name: lane.name, clips: lane.clips.map((c) => this._view(c)), stretch: this._stretchView(lane) }));
     return {
       mode: this.mode,
       gateOpen: this.gateOpen,
@@ -49,22 +53,64 @@ export class ThreadScheduler extends EventTarget {
       userPaused: this.userPaused,
       current: this.current ? this._view(this.current.clip) : null,
       queueLength: this._queueLength(),
-      lanes: [...this.lanes].map(([speaker, lane]) => ({ speaker, name: lane.name, clips: lane.clips.map((c) => this._view(c)) })),
+      lagMs: lanes.reduce((m, l) => Math.max(m, l.stretch ? l.stretch.lagMs : 0), 0),
+      lanes,
       history: this.history.map((c) => this._view(c)),
       expired: this.expired.map((c) => this._view(c))
     };
   }
 
-  _view(c) { return { id: c.id, speaker: c.speaker, name: c.name, seq: c.seq, durationMs: c.durationMs, source: c.source, expired: !!c.expired }; }
-  _queueLength() { let n = 0; for (const l of this.lanes.values()) n += l.clips.length; return n; }
+  _view(c) { return { id: c.id, speaker: c.speaker, name: c.name, seq: c.seq, durationMs: c.durationMs, source: c.source, expired: !!c.expired, offsetMs: c.offsetMs || 0 }; }
+
+  _queueLength() {
+    let n = 0;
+    for (const l of this.lanes.values()) n += l.clips.length + (l.ring && l.ring.hasVoiced() ? 1 : 0);
+    return n;
+  }
+
+  _unheardMs(lane) {
+    const cur = this.current;
+    if (!cur || !cur.plan || cur.lane !== lane) return 0;
+    const heard = cur.plan.heardSource(Math.floor(this._position(cur) / CATCHUP.frameMs));
+    return (cur.plan.srcFrames - heard) * CATCHUP.frameMs;
+  }
+
+  _position(cur) { return typeof cur.handle.position === 'function' ? cur.handle.position() : 0; }
+
+  _stretchView(lane) {
+    const ring = lane.ring;
+    if (!ring) return null;
+    const playing = this.current && this.current.plan && this.current.lane === lane;
+    const state = playing ? LANE_STATES.CATCHING_UP : ring.hasVoiced() ? LANE_STATES.BEHIND : LANE_STATES.LIVE;
+    const lagMs = state === LANE_STATES.LIVE ? 0 : ring.backlogMs() + this._unheardMs(lane);
+    return { state, lagMs, voicedMs: ring.voicedMs(), rate: playing ? this.current.clip.rate : 1, droppedVoicedMs: ring.dropped.voicedMs, droppedMs: ring.dropped.voicedMs + ring.dropped.unvoicedMs };
+  }
+
   _emit(type, detail) { this.dispatchEvent(new CustomEvent(type, { detail })); }
   _changed() { this._emit('state', this.snapshot()); }
 
-  _lane(speaker, name) {
+  _lane(speaker, name, seen = true) {
     let lane = this.lanes.get(speaker);
-    if (!lane) { lane = { name: name || speaker.slice(0, 8), clips: [], nextSeq: 1 }; this.lanes.set(speaker, lane); }
-    else if (name) lane.name = name;
+    if (!lane) { lane = { name: name || speaker.slice(0, 8), clips: [], nextSeq: 1, ring: null, stretchArrival: null, seen }; this.lanes.set(speaker, lane); }
+    else { if (name) lane.name = name; if (seen) lane.seen = true; }
     return lane;
+  }
+
+  attachRing(speaker, name, ring) {
+    const lane = this._lane(speaker, name, false);
+    lane.ring = ring;
+    ring.setFollow(this.gateOpen);
+    ring.onVoiced = () => {
+      lane.seen = true;
+      if (lane.stretchArrival === null) lane.stretchArrival = this.arrivals++;
+      if (!this.current && !this.localTalking && !this.userPaused) this._advance(); else this._changed();
+    };
+    ring.onDropped = (dropped) => this._emit('backlog-dropped', { speaker, name: lane.name, voicedMs: dropped.voicedMs });
+  }
+
+  detachRing(speaker) {
+    const lane = this.lanes.get(speaker);
+    if (lane) { lane.ring = null; lane.stretchArrival = null; }
   }
 
   addHistory(clip) {
@@ -100,9 +146,10 @@ export class ThreadScheduler extends EventTarget {
 
   _peek() {
     let best = null;
-    for (const lane of this.lanes.values()) {
+    for (const [speaker, lane] of this.lanes) {
       const head = lane.clips[0];
-      if (head && (!best || head.arrival < best.arrival)) best = head;
+      const candidate = head ? { kind: 'clip', lane, speaker, clip: head, arrival: head.arrival } : lane.ring && lane.ring.hasVoiced() ? { kind: 'stretch', lane, speaker, arrival: lane.stretchArrival ?? this.arrivals } : null;
+      if (candidate && (!best || candidate.arrival < best.arrival)) best = candidate;
     }
     return best;
   }
@@ -115,55 +162,55 @@ export class ThreadScheduler extends EventTarget {
   _setGate(open) {
     if (this.gateOpen === open) return;
     this.gateOpen = open;
+    for (const lane of this.lanes.values()) lane.ring?.setFollow(open);
     this.liveGate(open);
     this._emit('gate', { open });
   }
 
   setLocalTalking(talking) {
     const next = !!talking;
-    if (this.localTalking === next) return;
-    this.localTalking = next;
     if (next) {
+      if (this.talkEnd !== null) { this.cancel(this.talkEnd); this.talkEnd = null; }
+      if (this.localTalking) return;
+      this.localTalking = true;
       this._setGate(false);
-      this.current?.handle.pause?.();
-      this._syncCaptures();
-    } else {
-      this._endAllCaptures();
+      this._interrupt();
+      this._advance();
+      return;
     }
-    this._advance();
+    if (!this.localTalking || this.talkEnd !== null) return;
+    if (!this.ownTalkGraceMs) { this.localTalking = false; this._advance(); return; }
+    this.talkEnd = this.schedule(() => { this.talkEnd = null; this.localTalking = false; this._advance(); }, this.ownTalkGraceMs);
+  }
+
+  _interrupt() {
+    const cur = this.current;
+    if (!cur) return;
+    if (typeof cur.handle.position !== 'function') { cur.handle.pause?.(); return; }
+    const position = this._position(cur);
+    this.current = null;
+    cur.handle.stop?.();
+    if (cur.plan) {
+      cur.lane.ring.restore(cur.plan, cur.plan.heardSource(Math.floor(position / CATCHUP.frameMs)));
+      this._emit('stretch-interrupted', { speaker: cur.clip.speaker, positionMs: position });
+    } else {
+      cur.lane.clips.unshift({ ...cur.clip, offsetMs: position });
+      cur.lane.clips.sort(laneOrder);
+      this._emit('clip-interrupted', { ...this._view(cur.clip), offsetMs: position });
+    }
+  }
+
+  shutdown() {
+    if (this.talkEnd !== null) { this.cancel(this.talkEnd); this.talkEnd = null; }
+    const cur = this.current;
+    this.current = null;
+    cur?.handle.stop?.();
   }
 
   setRemoteSpeaking(speaker, name, speaking) {
-    if (speaking) this.remoteLive.set(speaker, name || speaker.slice(0, 8));
+    if (speaking) { this.remoteLive.set(speaker, name || speaker.slice(0, 8)); this._lane(speaker, name); }
     else this.remoteLive.delete(speaker);
-    if (speaking) this._syncCaptures();
-    else this._endCapture(speaker);
     this._advance();
-  }
-
-  _syncCaptures() {
-    if (this.gateOpen || !this.capture) return;
-    for (const [speaker, name] of this.remoteLive) {
-      if (this.captures.has(speaker)) continue;
-      const handle = this.capture.begin(speaker, name);
-      if (handle) this.captures.set(speaker, { handle, name });
-    }
-  }
-
-  _endAllCaptures() { for (const speaker of [...this.captures.keys()]) this._endCapture(speaker); }
-
-  _endCapture(speaker) {
-    const entry = this.captures.get(speaker);
-    if (!entry) return;
-    this.captures.delete(speaker);
-    this.pendingCaptures++;
-    Promise.resolve(this.capture.end(entry.handle)).then((result) => {
-      this.pendingCaptures--;
-      if (result && result.bytes?.length) {
-        const lane = this._lane(speaker, entry.name);
-        this.enqueue({ id: 'live-' + speaker.slice(0, 8) + '-' + lane.nextSeq + '-' + this.arrivals, speaker, name: entry.name, seq: lane.nextSeq, durationMs: result.durationMs, mime: result.mime, bytes: result.bytes, source: 'live' });
-      } else this._advance();
-    }).catch(() => { this.pendingCaptures--; this._advance(); });
   }
 
   _advance() {
@@ -174,21 +221,37 @@ export class ThreadScheduler extends EventTarget {
       return;
     }
     if (this.userPaused) { this._changed(); return; }
-    this._endAllCaptures();
-    if (this.pendingCaptures > 0) { this._changed(); return; }
     const next = this._peek();
     if (!next) { this._setGate(true); this._changed(); return; }
-    if (this.gateOpen && this.remoteLive.size) { this._changed(); return; }
+    if (this.gateOpen && next.kind === 'clip' && this.remoteLive.size) { this._changed(); return; }
     this._setGate(false);
-    this._start(next);
+    if (next.kind === 'stretch') this._startStretch(next.lane, next.speaker); else this._start(next.clip);
   }
 
   _start(clip) {
     this._take(clip);
     const token = ++this.playToken;
     const handle = this.player.play(clip);
-    this.current = { clip, handle, token };
-    this._syncCaptures();
+    this.current = { clip, handle, token, lane: this.lanes.get(clip.speaker), plan: null };
+    this._emit('clip-started', this._view(clip));
+    this._changed();
+    Promise.resolve(handle.ended).then(() => this._finish(token, 'ended'), () => this._finish(token, 'error'));
+  }
+
+  _startStretch(lane, speaker) {
+    const ring = lane.ring;
+    const rate = ring.backlogMs() > CATCHUP.settleLagMs ? CATCHUP.catchUpRate : 1;
+    const plan = ring.take(CATCHUP.planMaxMs);
+    if (!plan.outFrames) {
+      if (!ring.hasVoiced()) lane.stretchArrival = null;
+      this._advance();
+      return;
+    }
+    const seq = lane.nextSeq++;
+    const clip = { id: 'live-' + speaker.slice(0, 8) + '-' + seq, speaker, name: lane.name, seq, durationMs: plan.durationMs, pcm: plan.pcm, sampleRate: CATCHUP.sampleRate, rate, skippedMs: plan.skippedMs, source: 'live' };
+    const token = ++this.playToken;
+    const handle = this.player.play(clip);
+    this.current = { clip, handle, token, lane, plan };
     this._emit('clip-started', this._view(clip));
     this._changed();
     Promise.resolve(handle.ended).then(() => this._finish(token, 'ended'), () => this._finish(token, 'error'));
@@ -196,10 +259,14 @@ export class ThreadScheduler extends EventTarget {
 
   _finish(token, reason) {
     if (!this.current || this.current.token !== token) return;
-    const { clip } = this.current;
+    const { clip, plan, lane } = this.current;
     this.current = null;
-    this.history.unshift(clip);
-    this.history.length = Math.min(this.history.length, HISTORY_LIMIT);
+    if (plan) {
+      if (!lane.ring?.hasVoiced()) lane.stretchArrival = null;
+    } else {
+      this.history.unshift(clip);
+      this.history.length = Math.min(this.history.length, HISTORY_LIMIT);
+    }
     this._emit('clip-ended', { ...this._view(clip), reason });
     this._advance();
   }
@@ -224,9 +291,16 @@ export class ThreadScheduler extends EventTarget {
     }
     const next = this._peek();
     if (!next) return false;
-    this._take(next);
-    this.history.unshift(next);
-    this._emit('clip-ended', { ...this._view(next), reason: 'skipped' });
+    if (next.kind === 'stretch') {
+      next.lane.ring.clear();
+      next.lane.stretchArrival = null;
+      this._emit('clip-ended', { speaker: next.speaker, name: next.lane.name, reason: 'skipped' });
+      this._advance();
+      return true;
+    }
+    this._take(next.clip);
+    this.history.unshift(next.clip);
+    this._emit('clip-ended', { ...this._view(next.clip), reason: 'skipped' });
     this._advance();
     return true;
   }
@@ -236,7 +310,7 @@ export class ThreadScheduler extends EventTarget {
     if (!clip) return false;
     this.history = this.history.filter((c) => c !== clip);
     const lane = this._lane(clip.speaker, clip.name);
-    lane.clips.push({ ...clip, arrival: MIN_ARRIVAL });
+    lane.clips.push({ ...clip, offsetMs: 0, arrival: MIN_ARRIVAL });
     lane.clips.sort(laneOrder);
     this._advance();
     return true;
@@ -247,8 +321,14 @@ export const createThreadScheduler = (opts) => new ThreadScheduler(opts);
 
 export const createBlobPlayer = ({ AudioCtor = globalThis.Audio, UrlApi = globalThis.URL, BlobCtor = globalThis.Blob } = {}) => ({
   play(clip) {
-    const objectUrl = clip.bytes ? UrlApi.createObjectURL(new BlobCtor([clip.bytes], { type: clip.mime })) : null;
+    const body = clip.pcm ? encodeWav(clip.pcm, clip.sampleRate) : clip.bytes;
+    const type = clip.pcm ? 'audio/wav' : clip.mime;
+    const objectUrl = body ? UrlApi.createObjectURL(new BlobCtor([body], { type })) : null;
     const audio = new AudioCtor(objectUrl || clip.url);
+    audio.preservesPitch = true;
+    audio.defaultPlaybackRate = clip.rate || 1;
+    audio.playbackRate = clip.rate || 1;
+    if (clip.offsetMs) audio.currentTime = clip.offsetMs / 1000;
     let settle;
     const ended = new Promise((resolve) => { settle = resolve; });
     const release = () => { if (objectUrl) UrlApi.revokeObjectURL(objectUrl); settle(); };
@@ -257,31 +337,12 @@ export const createBlobPlayer = ({ AudioCtor = globalThis.Audio, UrlApi = global
     Promise.resolve(audio.play()).catch(release);
     return {
       ended,
+      audio,
+      position: () => audio.currentTime * 1000,
       pause: () => audio.pause(),
       resume: () => { Promise.resolve(audio.play()).catch(release); },
       stop: () => { audio.pause(); release(); }
     };
-  }
-});
-
-export const createRemoteCapture = ({ voice, RecorderCtor = globalThis.MediaRecorder, now = () => Date.now() }) => ({
-  begin(speaker) {
-    const stream = voice.getRemoteStream(speaker);
-    if (!stream || !RecorderCtor) return null;
-    const chunks = [];
-    const recorder = new RecorderCtor(stream);
-    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-    recorder.start(250);
-    return { recorder, chunks, startedAt: now() };
-  },
-  async end(handle) {
-    const { recorder, chunks, startedAt } = handle;
-    const stopped = new Promise((resolve) => { recorder.onstop = resolve; });
-    if (recorder.state !== 'inactive') recorder.stop();
-    await stopped;
-    if (!chunks.length) return null;
-    const blob = new Blob(chunks, { type: recorder.mimeType });
-    return { bytes: new Uint8Array(await blob.arrayBuffer()), mime: recorder.mimeType, durationMs: now() - startedAt };
   }
 });
 
@@ -353,7 +414,7 @@ const speakerOf = (voice, key) => {
   return entry?.identity || key.slice(0, 8);
 };
 
-export const bindVoiceThread = ({ voice, thread, media = null, channelId = '', keepClips = false, onDropped = null }) => {
+export const bindVoiceThread = ({ voice, thread, taps = null, media = null, channelId = '', keepClips = false, onDropped = null }) => {
   const speakerListener = (e) => {
     const { key, isLocal, speaking } = e.detail;
     if (isLocal) thread.setLocalTalking(speaking);
@@ -371,6 +432,9 @@ export const bindVoiceThread = ({ voice, thread, media = null, channelId = '', k
     const file = new File([segment.bytes], 'voice-' + segment.id + extension, { type: segment.mime });
     media.sendAudioClip(file, { channelId, serverId: voice.serverId, durationMs: segment.dur, speaker: segment.from, seq: segment.seq }).catch(() => {});
   };
+  const streamListener = (e) => taps?.open(e.detail.peerPubkey, e.detail.stream);
+  voice.addEventListener('remote-stream', streamListener);
+  if (taps) for (const key of voice.peers.keys()) taps.open(key, voice.getRemoteStream(key));
   voice.addEventListener('speaker', speakerListener);
   voice.addEventListener('segment-received', receivedListener);
   voice.addEventListener('segment-dropped', droppedListener);
@@ -378,6 +442,9 @@ export const bindVoiceThread = ({ voice, thread, media = null, channelId = '', k
   voice.requestTransmit();
   return {
     unbind() {
+      voice.removeEventListener('remote-stream', streamListener);
+      taps?.close();
+      thread.shutdown?.();
       voice.removeEventListener('speaker', speakerListener);
       voice.removeEventListener('segment-received', receivedListener);
       voice.removeEventListener('segment-dropped', droppedListener);
@@ -389,10 +456,11 @@ export const bindVoiceThread = ({ voice, thread, media = null, channelId = '', k
   };
 };
 
-export const createVoiceThread = ({ voice, media = null, channelId = '', keepClips = false, player = createBlobPlayer(), RecorderCtor, onDropped = null }) => {
-  const capture = createRemoteCapture({ voice, RecorderCtor });
-  const thread = new ThreadScheduler({ player, capture, liveGate: (open) => voice.setLivePlayback(open) });
-  const binding = bindVoiceThread({ voice, thread, media, channelId, keepClips, onDropped });
+export const createVoiceThread = ({ voice, media = null, channelId = '', keepClips = false, player = createBlobPlayer(), vadLoader, vadProfile = null, onDropped = null, onWarning = null }) => {
+  if (!vadLoader) throw new Error('createVoiceThread: vadLoader required');
+  const thread = new ThreadScheduler({ player, liveGate: (open) => voice.setLivePlayback(open) });
+  const taps = createLaneTaps({ voice, thread, loader: vadLoader, profile: vadProfile, nameOf: (key) => speakerOf(voice, key), onWarning });
+  const binding = bindVoiceThread({ voice, thread, taps, media, channelId, keepClips, onDropped });
   return { thread, unbind: binding.unbind, setKeepClips: binding.setKeepClips };
 };
 

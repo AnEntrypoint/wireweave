@@ -82,7 +82,7 @@ export const parseListing = (event) => {
   return { id: event.id, serverId, status: data.status, action: clip(data.action, 20), fields: cleanFields(data), by: event.pubkey, at: event.created_at };
 };
 
-export const createServersDiscovery = ({ relayPool, auth }) => {
+export const createServersDiscovery = ({ relayPool, auth, tombstones = null }) => {
   if (!relayPool || !auth) throw new Error('servers-discovery: relayPool and auth required');
   const listings = new Map();
   const superseded = new Map();
@@ -98,6 +98,7 @@ export const createServersDiscovery = ({ relayPool, auth }) => {
   const ingestListing = (event) => {
     const parsed = parseListing(event);
     if (!parsed) return;
+    if (tombstones) tombstones.watchTombstone(parsed.serverId);
     const byAuthor = listings.get(parsed.serverId) || new Map();
     const prev = byAuthor.get(parsed.by);
     if (prev && (prev.at > parsed.at || prev.id === parsed.id)) return;
@@ -156,6 +157,7 @@ export const createServersDiscovery = ({ relayPool, auth }) => {
 
   const scheduleRoles = () => { if (rolesTimer) return; rolesTimer = setTimeout(() => { rolesTimer = null; watchRoles(); }, 150); };
   listeners.add(scheduleRoles);
+  if (tombstones) tombstones.addEventListener('deleted', notify);
 
   const publish = async (serverId, status, action, input) => {
     if (!auth.isLoggedIn()) throw new Error('Sign in first');
@@ -206,7 +208,7 @@ export const createServersDiscovery = ({ relayPool, auth }) => {
     listed() {
       return [...listings.keys()]
         .map(view)
-        .filter((v) => v.status === 'discoverable')
+        .filter((v) => v.status === 'discoverable' && !(tombstones && tombstones.isDeleted(v.serverId)))
         .map((v) => ({ serverId: v.serverId, ...v.fields, by: v.latest.by, at: v.latest.at }))
         .sort((a, b) => b.at - a.at);
     },

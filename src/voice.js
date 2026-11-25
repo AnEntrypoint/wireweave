@@ -586,6 +586,8 @@ export class VoiceSession extends EventTarget {
     this._emit('live-playback', { open: next });
   }
 
+  audioContext() { return this._ensureAudioCtx(); }
+
   getRemoteStream(peerPubkey) { return this.peers.get(peerPubkey)?.remoteStream || null; }
 
   getParticipants() { return Array.from(this.participants, ([key, p]) => ({ ...p, key })); }
@@ -767,6 +769,7 @@ export class VoiceSession extends EventTarget {
       this._applyPlaybackMute();
       peer.remoteStream = stream;
       this._attachAnalyzer(peerPubkey, stream);
+      this._emit('remote-stream', { peerPubkey, stream });
       try { ev.receiver.playoutDelayHint = 0.02; } catch {}
       ev.track.onended = () => { if (peer.fsm.getSnapshot().matches('connected')) this._doIceRestart(peer, peerPubkey, fsmActor); };
       if (!peer._stallInterval) peer._stallInterval = setInterval(() => this._checkStall(peer, peerPubkey, fsmActor), STALL_CHECK);

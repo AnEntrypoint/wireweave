@@ -33,11 +33,11 @@ const PROFILE_BATCH_MS = 150;
 const PROFILE_BATCH_MAX = 40;
 
 export class Chat extends EventTarget {
-  constructor({ relayPool, auth, getChannelContext = () => ({ channelId: null, serverId: '' }), isAdmin = () => false, isRoleOf = () => 'member', bans = null, mutes = null, getEventHash = null, powDifficulty = 0, getNick = null }) {
+  constructor({ relayPool, auth, getChannelContext = () => ({ channelId: null, serverId: '' }), isAdmin = () => false, isRoleOf = () => 'member', bans = null, mutes = null, getEventHash = null, powDifficulty = 0, getNick = null, isServerDeleted = () => false }) {
     super();
     if (!relayPool || !auth) throw new Error('Chat: relayPool + auth required');
     this.pool = relayPool; this.auth = auth;
-    this.getChannelContext = getChannelContext; this.isAdmin = isAdmin; this.isRoleOf = isRoleOf;
+    this.getChannelContext = getChannelContext; this.isAdmin = isAdmin; this.isRoleOf = isRoleOf; this.isServerDeleted = isServerDeleted;
 
     this.bans = bans; this.mutes = mutes; this.getNick = getNick;
 
@@ -76,6 +76,10 @@ export class Chat extends EventTarget {
     }
     if (!serverId) {
       this._emit('send-blocked', { reason: 'no-server' });
+      return;
+    }
+    if (this.isServerDeleted(serverId)) {
+      this._emit('send-blocked', { reason: 'server-deleted' });
       return;
     }
     if (!channelId) {
@@ -136,6 +140,7 @@ export class Chat extends EventTarget {
 
   async sendTo(serverId, channelId, content) {
     if (!this.auth.isLoggedIn() || !serverId || !channelId) return;
+    if (this.isServerDeleted(serverId)) { this._emit('send-blocked', { reason: 'server-deleted' }); return; }
     if (this.bans && (this.bans.isBanned(serverId, this.auth.pubkey) || this.bans.isTimedOut(serverId, this.auth.pubkey))) return;
     const trimmed = String(content || '').trim();
     if (!trimmed) return;
@@ -157,7 +162,7 @@ export class Chat extends EventTarget {
       this.pool.unsubscribe('chat-deletions-' + this.activeScope);
       this.pool.unsubscribe('chat-typing-' + this.activeScope);
     }
-    const scope = serverId && channelId ? serverId + '|' + channelId : null;
+    const scope = serverId && channelId && !this.isServerDeleted(serverId) ? serverId + '|' + channelId : null;
     this.activeScope = scope;
     this.activeChannelId = channelId;
     this._emit('channel', { channelId });

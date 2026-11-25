@@ -46,6 +46,7 @@ export class Presence extends EventTarget {
     const prev = this.byAuthor.get(author);
     if (prev && prev.ts > ts) return;
     this.byAuthor.set(author, { status, custom, ts, until });
+    if (prev && prev.status === status && prev.custom === custom && prev.until === until) return;
     this.dispatchEvent(new CustomEvent('updated', { detail: { pubkey: author, status, custom } }));
   }
 }

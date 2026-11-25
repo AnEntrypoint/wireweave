@@ -11,14 +11,25 @@ registerProcessor('wireweave-vad-tap', TapProcessor);
 
 const SCRIPT_PROCESSOR_BLOCK = 4096;
 
+const loadedModules = new WeakMap();
+
+const loadTapModule = (ctx) => {
+  let loading = loadedModules.get(ctx);
+  if (!loading) {
+    const url = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: 'text/javascript' }));
+    loading = ctx.audioWorklet.addModule(url).finally(() => URL.revokeObjectURL(url));
+    loadedModules.set(ctx, loading);
+  }
+  return loading;
+};
+
 export const createStreamTap = async ({ ctx, stream, onSamples }) => {
   const source = ctx.createMediaStreamSource(stream);
   const sink = ctx.createGain();
   sink.gain.value = 0;
   let node;
   if (ctx.audioWorklet && typeof Blob !== 'undefined' && typeof URL !== 'undefined') {
-    const url = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: 'text/javascript' }));
-    try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+    await loadTapModule(ctx);
     node = new AudioWorkletNode(ctx, 'wireweave-vad-tap', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
     node.port.onmessage = (e) => onSamples(e.data);
   } else {

@@ -77,7 +77,8 @@ export const createWireweave = ({
     isRoleOf: (sid, pk) => roles.getRole(sid, pk),
     bans, mutes,
     getEventHash: nostrTools.getEventHash,
-    getNick: (pk) => (account && servers ? account.nickFor(pk, servers.currentServerId || '') : '')
+    getNick: (pk) => (account && servers ? account.nickFor(pk, servers.currentServerId || '') : ''),
+    isServerDeleted: (sid) => !!servers && servers.isDeleted(sid)
   });
   const remote = nip46 ? createRemoteSigner({ auth, nostrTools, nip46, storage }) : null;
   const account = createAccount({ relayPool: pool, auth, presence, mutes, chat, nostrTools, storage, prefsIO });

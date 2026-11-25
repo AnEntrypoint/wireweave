@@ -34,4 +34,5 @@ export { createFeedbackTools, feedbackToolDefinitions } from './feedback-tools.j
 export { mountFeedbackForm } from './feedback-form.js';
 export * as modules from './modules/index.js';
 export * from './vad/index.js';
-export { ThreadScheduler, createThreadScheduler, createVoiceThread, bindVoiceThread, createBlobPlayer, createRemoteCapture, parseKeptClipEvent, keptClipsFromEvents, verifyKeptClips, buildKeepTags, THREAD_MODES, VOICE_THREAD_TYPE } from './modules/voice-thread.js';
+export { ThreadScheduler, createThreadScheduler, createVoiceThread, bindVoiceThread, createBlobPlayer, LANE_STATES, parseKeptClipEvent, keptClipsFromEvents, verifyKeptClips, buildKeepTags, THREAD_MODES, VOICE_THREAD_TYPE } from './modules/voice-thread.js';
+export { CATCHUP, PcmRing, PcmBudget, encodeWav } from './voice-thread-audio.js';
