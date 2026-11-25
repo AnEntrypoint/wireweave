@@ -1,6 +1,7 @@
 import { replaceableTs } from './dtag.js';
 import { createStreamTap } from './vad/stream-tap.js';
 import { deriveRoomId } from './voice-room-id.js';
+import { STALL_GAP_MS, STALL_GRACE_MS, linkOf, noteHeartbeat, noteTransport, transportBytes, silenceMs, thresholdMs, linkAlive } from './hub-liveness.js';
 
 
 const DEFAULT_ICE_SERVERS = [
@@ -18,8 +19,8 @@ const PRESENCE_LIVE_MS = 30000;
 const PEER_STALE_MS = 15000;
 const HUB_DISCONNECT_MS = 3000;
 const HUB_ROUTE_TIMEOUT_MS = 10000;
-const HUB_SILENCE_MS = 4000;
 const HUB_PING_MS = 1000;
+const HUB_WATCH_MS = 500;
 const OFFER_RETRY_MS = 2500;
 const OFFER_RETRIES = 3;
 const HEARTBEAT = 5000;
@@ -553,7 +554,10 @@ export class VoiceSession extends EventTarget {
       const tag = data[3]; const body = data.slice(4);
       if (tag !== 'J') return;
       let obj; try { obj = JSON.parse(body); } catch { return; }
-      if (obj.type === 'hb') peer.lastHb = Date.now();
+      if (obj.type === 'hb') {
+        noteHeartbeat(linkOf(peer), Date.now(), Date.now() >= (this.sfu.calmAt || 0));
+        if (obj.relays) for (const [streamId, src] of Object.entries(obj.relays)) if (!peer.relayMap?.has(streamId)) this._noteRelay(peer, peerPubkey, streamId, src);
+      }
       else if (obj.type === 'video') {
         const source = obj.src && this.sfu.hub === peerPubkey ? obj.src : peerPubkey;
         if (source === peerPubkey) peer.videoOn = !!obj.on;
@@ -701,7 +705,7 @@ export class VoiceSession extends EventTarget {
     if (Date.now() - (data.ts || 0) > PRESENCE_LIVE_MS) return;
     const shortId = 'nostr-' + event.pubkey.slice(0, 12);
     if (data.action === 'leave') { this.sfu.seen.delete(event.pubkey); this.sfu.suspect.delete(event.pubkey); }
-    else this.sfu.seen.set(event.pubkey, { at: Date.now(), claim: data.hub || null, cls: typeof data.uplinkClass === 'number' ? data.uplinkClass : 0 });
+    else this.sfu.seen.set(event.pubkey, { at: Date.now() - Math.min(Math.max(0, Date.now() - (data.ts || 0)), PRESENCE_LIVE_MS), claim: data.hub || null, cls: typeof data.uplinkClass === 'number' ? data.uplinkClass : 0 });
     if (data.rttScores) this.sfu.rttMatrix.set(event.pubkey, data.rttScores);
     if (data.capScores || data.uplinkKbps != null) {
       if (!this.sfu.capacityMatrix) this.sfu.capacityMatrix = new Map();
@@ -974,13 +978,19 @@ export class VoiceSession extends EventTarget {
     } else if (data.type === 'answer' && pc.signalingState === 'have-local-offer') {
       pc.setRemoteDescription(new RTCSessionDescription(data.data)).then(() => { peer.remoteDescSet = true; drainBuf(); }).catch(() => {});
     } else if (data.type === 'relay') {
-      (peer.relayMap ||= new Map()).set(data.data.streamId, data.data.src);
-      const pending = peer.pendingRelay?.get(data.data.streamId);
-      if (pending) { peer.pendingRelay.delete(data.data.streamId); if (pending.attachVideo) pending.attachVideo(data.data.src); else this._attachRelayed(from, data.data.src, pending.ev, pending.stream); }
+      this._noteRelay(peer, from, data.data.streamId, data.data.src);
     } else if (data.type === 'ice') {
       const cands = Array.isArray(data.data) ? data.data : [data.data];
       if (peer.remoteDescSet) addCands(cands); else peer.bufferedCandidates.push(...cands);
     }
+  }
+
+  _noteRelay(peer, from, streamId, src) {
+    (peer.relayMap ||= new Map()).set(streamId, src);
+    const pending = peer.pendingRelay?.get(streamId);
+    if (!pending) return;
+    peer.pendingRelay.delete(streamId);
+    if (pending.attachVideo) pending.attachVideo(src); else this._attachRelayed(from, src, pending.ev, pending.stream);
   }
 
   _setConnectionQuality(peerPubkey, quality) {
@@ -993,7 +1003,7 @@ export class VoiceSession extends EventTarget {
 
   async _publishSignal(toPubkey, type, data) {
     if (!this.auth.pubkey || !this.roomId) return;
-    const d = 'zellous-rtc:' + this.roomId + ':' + this.auth.pubkey + ':' + toPubkey + ':' + type + ':' + (type === 'ice' ? Date.now() : 'sdp');
+    const d = 'zellous-rtc:' + this.roomId + ':' + this.auth.pubkey + ':' + toPubkey + ':' + type + ':' + (type === 'ice' ? Date.now() : type === 'relay' ? data.streamId : 'sdp');
     const signed = await this.auth.sign({ kind: 30078, created_at: replaceableTs(), tags: [['d', d], ['p', toPubkey], ['r', this.roomId]], content: JSON.stringify({ type, data }) });
     this.pool.publish(signed);
   }
@@ -1069,7 +1079,7 @@ export class VoiceSession extends EventTarget {
           if (existing) { if (existing.track !== track) { existing.tx.sender.replaceTrack(track).catch(() => {}); existing.track = track; } continue; }
           const stream = new MediaStream();
           const tx = target.pc.addTransceiver(track, { direction: 'sendonly', streams: [stream] });
-          target.relays.set(feedKey, { tx, track });
+          target.relays.set(feedKey, { tx, track, streamId: stream.id, src: sourcePk });
           target.relayTxs.add(tx);
           this._publishSignal(targetPk, 'relay', { streamId: stream.id, src: sourcePk });
           this._renegotiate(targetPk, target);
@@ -1101,18 +1111,44 @@ export class VoiceSession extends EventTarget {
     this.sfu.reflexiveByPeer = new Map();
     this._sfuStopStats();
     this.sfu.statsInterval = setInterval(() => this._sfuPoll(), 2500);
-    this.sfu.watchdog = setInterval(() => this._sfuWatchdog(), HUB_PING_MS);
+    this.sfu.watchdog = setInterval(() => this._sfuWatchdog(), HUB_WATCH_MS);
     this._sfuMaybeElect();
   }
 
   _sfuWatchdog() {
+    const now = Date.now();
+    const gap = this.sfu.lastTick ? now - this.sfu.lastTick : 0;
+    this.sfu.lastTick = now;
+    if (gap > STALL_GAP_MS) this.sfu.calmAt = now + STALL_GRACE_MS;
     if (!this.sfu.hub) return;
     if (this.sfu.hub === this.auth.pubkey) {
-      for (const [, peer] of this.peers) this._dcSendJSON(peer, { type: 'hb' });
+      if (now - (this.sfu.pingedAt || 0) >= HUB_PING_MS - HUB_WATCH_MS / 2) {
+        this.sfu.pingedAt = now;
+        for (const [, peer] of this.peers) this._dcSendJSON(peer, { type: 'hb', relays: this._relayMapFor(peer) });
+      }
       return;
     }
     const hubPeer = this.peers.get(this.sfu.hub);
-    if (hubPeer && hubPeer.lastHb && Date.now() - hubPeer.lastHb > HUB_SILENCE_MS) this._sfuOnHubLost(true);
+    if (!hubPeer) return;
+    this._sfuSampleLink(hubPeer);
+    if (now < (this.sfu.calmAt || 0)) return;
+    const link = linkOf(hubPeer);
+    if (silenceMs(link, now) > thresholdMs(link)) this._sfuOnHubLost(true);
+  }
+  _relayMapFor(peer) {
+    const out = {};
+    if (peer.relays) for (const [, r] of peer.relays) out[r.streamId] = r.src;
+    return out;
+  }
+  async _sfuSampleLink(peer) {
+    const link = linkOf(peer);
+    if (link.sampling || peer.pc?.connectionState !== 'connected') return;
+    link.sampling = true;
+    try {
+      const count = await transportBytes(peer.pc);
+      const now = Date.now();
+      noteTransport(link, count, now, now >= (this.sfu.calmAt || 0));
+    } catch {} finally { link.sampling = false; }
   }
   _sfuStop() {
     this._sfuStopStats();
@@ -1179,6 +1215,7 @@ export class VoiceSession extends EventTarget {
       if (!pk) continue;
       const seen = this.sfu.seen.get(pk);
       if (seen && now - seen.at <= PEER_STALE_MS) continue;
+      if (pk === this.sfu.hub && linkAlive(this.peers.get(pk), now)) continue;
       if (seen && this.peers.get(pk)?.pc?.connectionState === 'connected' && now - seen.at <= PEER_STALE_MS * 2) continue;
       this.participants.delete(shortId);
       this.sfu.pubkeyByShortId.delete(shortId);
@@ -1206,7 +1243,7 @@ export class VoiceSession extends EventTarget {
     const live = new Map();
     live.set(this.auth.pubkey, { claim: this.sfu.hub, cls: this.sfu.myClass || 0 });
     for (const [pk, seen] of this.sfu.seen) {
-      if (now - seen.at > PEER_STALE_MS) continue;
+      if (now - seen.at > PEER_STALE_MS && !(pk === this.sfu.hub && linkAlive(this.peers.get(pk), now))) continue;
       const suspectedAt = this.sfu.suspect.get(pk);
       if (suspectedAt && seen.at <= suspectedAt) continue;
       live.set(pk, { claim: seen.claim, cls: seen.cls });
@@ -1268,7 +1305,9 @@ export class VoiceSession extends EventTarget {
     this.sfu.suspect.set(lost, Date.now());
     this.sfu.hub = null;
     this.sfu.routeFor = null;
-    this._emit('hub-lost', { hub: lost, silent });
+    const link = this.peers.get(lost) && linkOf(this.peers.get(lost));
+    const at = Date.now();
+    this._emit('hub-lost', { hub: lost, silent, hbAgeMs: link && link.hbAt ? at - link.hbAt : null, netAgeMs: link && link.netAt ? at - link.netAt : null });
     if (silent) { this._closePeer(lost); this._dropRelayed(lost); }
     this._sfuElect();
   }
