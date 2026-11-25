@@ -16,11 +16,14 @@ export const CATCHUP = Object.freeze({
   holeMinMs: 60,
   holeHoldMs: 2500,
   holeRecheckMs: 250,
+  holeMatchFrames: 25,
   holeMaxAbs: 4,
   spliceVoicedDb: -55,
   alignSearchMs: 300,
   alignWindowMs: 300,
   alignDefaultShiftMs: 80,
+  spliceMarginMeasuredFrames: 5,
+  spliceMarginFallbackFrames: 10,
   alignMinCorrelation: 0.4,
   alignDecimate: 4,
   planMaxMs: 20000,
@@ -64,6 +67,7 @@ export class PcmRing {
     this.maxTail = Math.round(CATCHUP.followTailMs / CATCHUP.frameMs);
     this.voicedCount = 0;
     this.follow = true;
+    this.lastFilled = null;
     this.dropped = { voicedMs: 0, unvoicedMs: 0 };
     budget?.rings.add(this);
   }
@@ -89,6 +93,7 @@ export class PcmRing {
   clear() {
     this.frames = [];
     this.tail = [];
+    this.lastFilled = null;
     this.voicedCount = 0;
   }
 
@@ -139,30 +144,51 @@ export class PcmRing {
     return runs;
   }
 
-  splice({ pcm, muteMs }) {
+  pickHole(runs, windowMs) {
+    const after = this.lastFilled ? this.frames.indexOf(this.lastFilled) : -1;
+    const later = runs.filter(([from]) => from > after);
+    const pool = later.length ? later : runs;
+    if (!Number.isFinite(windowMs)) return pool[pool.length - 1];
+    const wanted = windowMs / CATCHUP.frameMs;
+    let best = null;
+    for (const run of pool) { const miss = Math.abs(run[1] - run[0] - wanted); if (!best || miss < best.miss) best = { run, miss }; }
+    return best && best.miss <= CATCHUP.holeMatchFrames ? best.run : null;
+  }
+
+  splice({ pcm, muteMs, unmuteMs }) {
     const runs = this.silentRuns();
     if (!runs.length || !Number.isFinite(muteMs)) return null;
-    const [from, to] = runs[runs.length - 1];
+    const hole = this.pickHole(runs, Number.isFinite(unmuteMs) ? unmuteMs - muteMs : NaN);
+    if (!hole) return null;
+    const [from, to] = hole;
     let startSample = from * CATCHUP.frameSamples - Math.round((muteMs / 1000) * CATCHUP.sampleRate);
     const measured = this._alignShift(pcm, startSample, to);
     const shift = measured || { samples: Math.round((CATCHUP.alignDefaultShiftMs / 1000) * CATCHUP.sampleRate), correlation: 0 };
     startSample -= shift.samples;
+    const margin = measured ? CATCHUP.spliceMarginMeasuredFrames : CATCHUP.spliceMarginFallbackFrames;
+    const replacement = [];
     let filled = 0;
     let voiced = 0;
-    for (let i = from; i < to; i++) {
+    let removedVoiced = 0;
+    for (let i = from; i < to; i++) if (this.frames[i].v) removedVoiced++;
+    for (let k = -margin; k < to - from + margin; k++) {
+      const i = from + k;
+      const inHole = k >= 0 && k < to - from;
       const at = i * CATCHUP.frameSamples - startSample;
-      if (at < 0 || at + CATCHUP.frameSamples > pcm.length) continue;
+      if (at < 0 || at + CATCHUP.frameSamples > pcm.length) { if (inHole) replacement.push(this.frames[i]); continue; }
       const data = pcm.slice(at, at + CATCHUP.frameSamples);
-      const frame = this.frames[i];
-      frame.d = data;
-      frame.z = false;
-      frame.filled = true;
+      const old = inHole ? this.frames[i] : null;
+      const v = (old && old.v) || frameDb(data) >= CATCHUP.spliceVoicedDb ? 1 : 0;
+      replacement.push({ d: data, v, z: false, filled: true, t: old ? old.t : this.now() });
       filled++;
-      if (!frame.v && frameDb(data) >= CATCHUP.spliceVoicedDb) { frame.v = 1; voiced++; }
+      if (v) voiced++;
     }
-    this.voicedCount += voiced;
+    this.frames.splice(from, to - from, ...replacement);
+    this.lastFilled = replacement[replacement.length - 1] || null;
+    this.voicedCount += voiced - removedVoiced;
+    while (this.frames.length > this.maxFrames) this._evictOne();
     if (filled) this.onVoiced?.();
-    return { alignShiftMs: Math.round((shift.samples / CATCHUP.sampleRate) * 1000), alignCorrelation: Number(shift.correlation.toFixed(2)), holeFrames: to - from, holeStart: from, filledFrames: filled, voicedFrames: voiced, leadingUnplacedMs: Math.max(0, Math.round((-startSample / CATCHUP.sampleRate) * 1000)) };
+    return { alignShiftMs: Math.round((shift.samples / CATCHUP.sampleRate) * 1000), alignCorrelation: Number(shift.correlation.toFixed(2)), holeFrames: to - from, holeStart: from, insertedFrames: replacement.length - (to - from), filledFrames: filled, voicedFrames: voiced, leadingUnplacedMs: Math.max(0, Math.round((-startSample / CATCHUP.sampleRate) * 1000)) };
   }
 
   _alignShift(pcm, startSample, holeEnd) {

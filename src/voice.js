@@ -14,16 +14,21 @@ export const setIceServers = (list) => { if (Array.isArray(list) && list.length)
 export const getIceServers = () => ICE_SERVERS.slice();
 const hasTurnServer = () => ICE_SERVERS.some(s => (Array.isArray(s.urls) ? s.urls : [s.urls]).some(u => typeof u === 'string' && (u.startsWith('turn:') || u.startsWith('turns:'))));
 
-const PRESENCE_EXPIRY = 300000;
+const PRESENCE_LIVE_MS = 30000;
+const PEER_STALE_MS = 15000;
+const HUB_DISCONNECT_MS = 3000;
+const HUB_ROUTE_TIMEOUT_MS = 10000;
+const HUB_SILENCE_MS = 4000;
+const HUB_PING_MS = 1000;
+const OFFER_RETRY_MS = 2500;
+const OFFER_RETRIES = 3;
 const HEARTBEAT = 5000;
 const STALL_CHECK = 5000;
 const DISCONNECT_GRACE = 8000;
 
 const CONNECT_TIMEOUT = 8000;
-const HUB_HYSTERESIS_MS = 8000;
 const OUTBOUND_START_WAIT_MS = 120;
 const OUTBOUND_POST_ROLL_MS = 500;
-const HUB_REL_ADVANTAGE = 0.25;
 
 const SPEAKER_ACTIVE_RMS = 0.045;
 const SPEAKER_HOLD_MS = 350;
@@ -65,7 +70,7 @@ export class VoiceSession extends EventTarget {
     this.localStream = null; this.cameraStream = null; this.screenSharing = false;
     this.heartbeat = null; this.joinTs = 0;
     this.muted = false; this.deafened = false;
-    this.sfu = { mode: 'mesh', hub: null, hubLostAt: null, rttMatrix: new Map(), electionTimer: null, statsInterval: null, actor: null };
+    this.sfu = { mode: 'mesh', hub: null, hubLostAt: null, rttMatrix: new Map(), electionTimer: null, statsInterval: null, actor: null, seen: new Map(), suspect: new Map(), pubkeyByShortId: new Map(), routeTimer: null, routeFor: null, myClass: undefined };
     this.retrySchedule = {};
     this._epoch = 0;
 
@@ -275,25 +280,20 @@ export class VoiceSession extends EventTarget {
   }
 
   _detachCamera(peer, peerPubkey) {
-    const tr = peer.pc?.getTransceivers().find(t => t.receiver.track.kind === 'video' && t.sender.track);
+    const tr = peer.pc?.getTransceivers().find(t => t.receiver.track.kind === 'video' && t.sender.track && !peer.relayTxs?.has(t));
     if (!tr) return;
     tr.sender.replaceTrack(null).catch(() => {});
     tr.direction = 'recvonly';
-    this._renegotiate(peer, peerPubkey);
+    this._renegotiate(peerPubkey, peer);
   }
 
   _attachCamera(peer, peerPubkey) {
     const pc = peer.pc; if (!pc || !this.cameraStream) return;
     const track = this.cameraStream.getVideoTracks()[0];
-    const tr = pc.getTransceivers().find(t => t.receiver.track.kind === 'video' && !t.stopped);
+    const tr = pc.getTransceivers().find(t => t.receiver.track.kind === 'video' && !t.stopped && !peer.relayTxs?.has(t));
     if (tr) { tr.direction = 'sendrecv'; tr.sender.replaceTrack(track).catch(() => {}); }
     else pc.addTrack(track, this.cameraStream);
-    this._renegotiate(peer, peerPubkey);
-  }
-
-  _renegotiate(peer, peerPubkey) {
-    const pc = peer.pc; if (!pc || pc.signalingState !== 'stable') return;
-    pc.createOffer().then(o => { o.sdp = this._mungeDtx(o.sdp); return pc.setLocalDescription(o).then(() => this._publishSignal(peerPubkey, 'offer', o)); }).catch(() => {});
+    this._renegotiate(peerPubkey, peer);
   }
 
   _setRemoteVideo(peerPubkey, on) {
@@ -553,7 +553,16 @@ export class VoiceSession extends EventTarget {
       const tag = data[3]; const body = data.slice(4);
       if (tag !== 'J') return;
       let obj; try { obj = JSON.parse(body); } catch { return; }
-      if (obj.type === 'video') this._setRemoteVideo(peerPubkey, !!obj.on);
+      if (obj.type === 'hb') peer.lastHb = Date.now();
+      else if (obj.type === 'video') {
+        const source = obj.src && this.sfu.hub === peerPubkey ? obj.src : peerPubkey;
+        if (source === peerPubkey) peer.videoOn = !!obj.on;
+        this._setRemoteVideo(source, !!obj.on);
+        if (source === peerPubkey && this.sfu.hub === this.auth.pubkey) {
+          for (const [pk, other] of this.peers) if (pk !== peerPubkey) this._dcSendJSON(other, { type: 'video', on: !!obj.on, src: peerPubkey });
+          this._sfuRelayAll();
+        }
+      }
       else if (obj.type === 'seg-meta') {
         peer._dcInbox.set(obj.segId, { meta: obj, parts: new Array(obj.total), received: 0 });
       } else if (obj.type === 'seg-end') {
@@ -620,11 +629,12 @@ export class VoiceSession extends EventTarget {
     const rttScores = isHb ? this._rttScores() : {};
     const capScores = isHb ? this._capScores() : {};
     const reflexive = isHb ? this._reflexiveAddrs() : [];
-    const uplinkKbps = isHb ? this._estimateUplinkKbps() : 0;
+    const uplinkKbps = this._estimateUplinkKbps();
+    const uplinkClass = this._sfuUplinkClass();
     const signed = await this.auth.sign({
       kind: 30078, created_at: replaceableTs(),
       tags: [['d', 'zellous-voice:' + this.roomId], ['action', action], ['channel', this.channelName], ['server', this.serverId]],
-      content: JSON.stringify({ action, name: this.displayName, channel: this.channelName, muted: !!this.userMuted, ts: Date.now(), rttScores, capScores, reflexive, uplinkKbps })
+      content: JSON.stringify({ action, name: this.displayName, channel: this.channelName, muted: !!this.userMuted, ts: Date.now(), rttScores, capScores, reflexive, uplinkKbps, uplinkClass, hub: this.sfu.hub || null })
     });
     this.pool.publish(signed);
   }
@@ -688,8 +698,10 @@ export class VoiceSession extends EventTarget {
   _onPresence(event) {
     if (event.pubkey === this.auth.pubkey) return;
     let data; try { data = JSON.parse(event.content); } catch { return; }
-    if (Date.now() - (data.ts || 0) > PRESENCE_EXPIRY) return;
+    if (Date.now() - (data.ts || 0) > PRESENCE_LIVE_MS) return;
     const shortId = 'nostr-' + event.pubkey.slice(0, 12);
+    if (data.action === 'leave') { this.sfu.seen.delete(event.pubkey); this.sfu.suspect.delete(event.pubkey); }
+    else this.sfu.seen.set(event.pubkey, { at: Date.now(), claim: data.hub || null, cls: typeof data.uplinkClass === 'number' ? data.uplinkClass : 0 });
     if (data.rttScores) this.sfu.rttMatrix.set(event.pubkey, data.rttScores);
     if (data.capScores || data.uplinkKbps != null) {
       if (!this.sfu.capacityMatrix) this.sfu.capacityMatrix = new Map();
@@ -701,18 +713,18 @@ export class VoiceSession extends EventTarget {
     }
     if (data.action === 'leave') {
       this.participants.delete(shortId);
-      this.sfu.pubkeyByShortId?.delete(shortId);
+      this.sfu.pubkeyByShortId.delete(shortId);
       this._closePeer(event.pubkey);
-      if (this.sfu.hub === event.pubkey) this._sfuOnHubLost();
       this._dropRelayed(event.pubkey);
+      this._sfuMaybeElect();
     }
     else if (!this.participants.has(shortId)) {
       this.participants.set(shortId, { identity: data.name || event.pubkey.slice(0, 8), isSpeaking: false, isMuted: false, isLocal: false, hasVideo: false, connectionQuality: 'connecting' });
-      if (this.sfu.pubkeyByShortId) this.sfu.pubkeyByShortId.set(shortId, event.pubkey);
+      this.sfu.pubkeyByShortId.set(shortId, event.pubkey);
       this._sfuMaybeElect();
       this._maybeConnect(event.pubkey);
     } else {
-      if (this.sfu.pubkeyByShortId && !this.sfu.pubkeyByShortId.has(shortId)) this.sfu.pubkeyByShortId.set(shortId, event.pubkey);
+      if (!this.sfu.pubkeyByShortId.has(shortId)) this.sfu.pubkeyByShortId.set(shortId, event.pubkey);
       this._sfuMaybeElect();
       if (this._sfuShouldHaveConnectionTo(event.pubkey) && !this.peers.has(event.pubkey)) this._maybeConnect(event.pubkey);
     }
@@ -722,7 +734,8 @@ export class VoiceSession extends EventTarget {
   }
 
   _sfuShouldHaveConnectionTo(peerPubkey) {
-    if (!this.sfu.hub || this.sfu.hub === this.auth.pubkey) return true;
+    if (!this.sfu.hub) return false;
+    if (this.sfu.hub === this.auth.pubkey) return true;
     return peerPubkey === this.sfu.hub;
   }
 
@@ -732,11 +745,11 @@ export class VoiceSession extends EventTarget {
       (event) => this._handleSignal(event));
   }
 
-  _maybeConnect(peerPubkey) {
+  _maybeConnect(peerPubkey, force = false) {
     if (!peerPubkey || peerPubkey === this.auth.pubkey || this.peers.has(peerPubkey)) return;
     if (this.bans && this.serverId && (this.bans.isBanned?.(this.serverId, peerPubkey) || this.bans.isTimedOut?.(this.serverId, peerPubkey) || this.bans.isKicked?.(this.serverId, peerPubkey))) return;
 
-    if (!this._sfuShouldHaveConnectionTo(peerPubkey)) return;
+    if (!force && !this._sfuShouldHaveConnectionTo(peerPubkey)) return;
     this._cancelReconnect(peerPubkey);
     const fsmActor = this.xstate.createActor(this.fsm.peerMachine);
     fsmActor.subscribe((snap) => { const p = this.peers.get(peerPubkey); if (p) p.state = snap.value; });
@@ -785,10 +798,19 @@ export class VoiceSession extends EventTarget {
         return;
       }
       if (ev.track.kind === 'video') {
-        ev.track.onunmute = () => this._setRemoteVideo(peerPubkey, true);
-        ev.track.onmute = () => this._setRemoteVideo(peerPubkey, false);
-        ev.track.onended = () => this._setRemoteVideo(peerPubkey, false);
-        this.onVideoTrack?.({ peerPubkey, track: ev.track, stream });
+        const attachVideo = (source) => {
+          ev.track.onunmute = () => this._setRemoteVideo(source, true);
+          ev.track.onmute = () => this._setRemoteVideo(source, false);
+          ev.track.onended = () => this._setRemoteVideo(source, false);
+          this.onVideoTrack?.({ peerPubkey: source, track: ev.track, stream });
+        };
+        if (!peer.relayTxs?.has(ev.transceiver)) { peer.remoteVideoTrack = ev.track; this._sfuRelayAll(); }
+        const via = peer.relayMap?.get(stream.id);
+        if (via) attachVideo(via);
+        else if (this.sfu.hub && this.sfu.hub !== this.auth.pubkey && this.sfu.hub === peerPubkey) {
+          (peer.pendingRelay ||= new Map()).set(stream.id, { ev, stream, attachVideo });
+          setTimeout(() => { const pending = peer.pendingRelay?.get(stream.id); if (pending) { peer.pendingRelay.delete(stream.id); attachVideo(peerPubkey); } }, 1500);
+        } else attachVideo(peerPubkey);
         return;
       }
       this.onAudioTrack?.({ peerPubkey, track: ev.track, stream, peer });
@@ -820,6 +842,7 @@ export class VoiceSession extends EventTarget {
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'connected') {
         peer.failCount = 0; this._cancelReconnect(peerPubkey);
+        if (peer.hubTimer) { clearTimeout(peer.hubTimer); peer.hubTimer = null; }
         if (fsmActor.getSnapshot().can({ type: 'recv_answer' })) fsmActor.send({ type: 'recv_answer' });
         if (peer.disconnectTimer) { clearTimeout(peer.disconnectTimer); peer.disconnectTimer = null; }
         if (peer.connectTimer) { clearTimeout(peer.connectTimer); peer.connectTimer = null; }
@@ -828,6 +851,7 @@ export class VoiceSession extends EventTarget {
         this._sfuRelayAll();
       }
 
+      if (pc.connectionState === 'disconnected' && this.sfu.hub === peerPubkey && !peer.hubTimer) peer.hubTimer = setTimeout(() => { peer.hubTimer = null; this._sfuOnHubLost(); }, HUB_DISCONNECT_MS);
       if (pc.connectionState === 'disconnected') { if (peer.connectTimer) { clearTimeout(peer.connectTimer); peer.connectTimer = null; } fsmActor.send({ type: 'disconnect' }); peer.disconnectTimer = setTimeout(() => this._doIceRestart(peer, peerPubkey, fsmActor), DISCONNECT_GRACE); this._setConnectionQuality(peerPubkey, 'poor'); }
       if (pc.connectionState === 'failed') this._doIceRestart(peer, peerPubkey, fsmActor);
       if (pc.connectionState === 'closed') { this._closePeer(peerPubkey); if (this.sfu.hub === peerPubkey) this._sfuOnHubLost(); }
@@ -836,8 +860,18 @@ export class VoiceSession extends EventTarget {
     this._ensureDataChannel(peer, peerPubkey, isOfferer);
     if (isOfferer) {
       fsmActor.send({ type: 'offer' });
-      pc.createOffer().then(o => { o.sdp = this._mungeDtx(o.sdp); return pc.setLocalDescription(o).then(() => this._publishSignal(peerPubkey, 'offer', o)); }).catch(() => {});
+      pc.createOffer().then(o => { o.sdp = this._mungeDtx(o.sdp); return pc.setLocalDescription(o).then(() => { this._publishSignal(peerPubkey, 'offer', o); this._armOfferRetry(peer, peerPubkey, o, 1); }); }).catch(() => {});
     }
+  }
+
+  _armOfferRetry(peer, peerPubkey, offer, attempt) {
+    if (peer.offerTimer) clearTimeout(peer.offerTimer);
+    peer.offerTimer = setTimeout(() => {
+      peer.offerTimer = null;
+      if (this.peers.get(peerPubkey) !== peer || peer.pc.signalingState !== 'have-local-offer' || attempt > OFFER_RETRIES) return;
+      this._publishSignal(peerPubkey, 'offer', offer);
+      this._armOfferRetry(peer, peerPubkey, offer, attempt + 1);
+    }, OFFER_RETRY_MS);
   }
 
   _mungeDtx(sdp) {
@@ -916,7 +950,7 @@ export class VoiceSession extends EventTarget {
     if (!data?.type) return;
     if (!this.peers.has(from)) {
       if (!this.participants.has('nostr-' + from.slice(0, 12))) return;
-      this._maybeConnect(from);
+      this._maybeConnect(from, data.type === 'offer');
     }
     const peer = this.peers.get(from); if (!peer) return;
     const pc = peer.pc; const fsmActor = peer.fsm;
@@ -926,10 +960,10 @@ export class VoiceSession extends EventTarget {
       if (fsmActor.getSnapshot().can({ type: 'recv_offer' })) fsmActor.send({ type: 'recv_offer' });
       await pc.setRemoteDescription(new RTCSessionDescription(data.data));
       peer.remoteDescSet = true; drainBuf();
-      const hasAudioTx = pc.getTransceivers().some(t => t.receiver.track?.kind === 'audio');
+      const hasAudioTx = pc.getTransceivers().some(t => t.receiver.track?.kind === 'audio' && !peer.relayTxs?.has(t));
       if (!hasAudioTx) pc.addTransceiver('audio', { direction: this.localStream ? 'sendrecv' : 'recvonly' });
       if (this.localStream) { const hasSender = pc.getSenders().some(s => s.track?.kind === 'audio'); if (!hasSender) this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream)); }
-      if (this.cameraStream) { const vt = pc.getTransceivers().find(t => t.receiver.track.kind === 'video' && !t.stopped && !t.sender.track); if (vt) { vt.direction = 'sendrecv'; vt.sender.replaceTrack(this.cameraStream.getVideoTracks()[0]).catch(() => {}); } }
+      if (this.cameraStream) { const vt = pc.getTransceivers().find(t => t.receiver.track.kind === 'video' && !t.stopped && !t.sender.track && !peer.relayTxs?.has(t)); if (vt) { vt.direction = 'sendrecv'; vt.sender.replaceTrack(this.cameraStream.getVideoTracks()[0]).catch(() => {}); } }
       const a = await pc.createAnswer(); a.sdp = this._mungeDtx(a.sdp); await pc.setLocalDescription(a); fsmActor.send({ type: 'sent_answer' }); this._publishSignal(from, 'answer', a);
     };
     if (data.type === 'offer') {
@@ -942,7 +976,7 @@ export class VoiceSession extends EventTarget {
     } else if (data.type === 'relay') {
       (peer.relayMap ||= new Map()).set(data.data.streamId, data.data.src);
       const pending = peer.pendingRelay?.get(data.data.streamId);
-      if (pending) { peer.pendingRelay.delete(data.data.streamId); this._attachRelayed(from, data.data.src, pending.ev, pending.stream); }
+      if (pending) { peer.pendingRelay.delete(data.data.streamId); if (pending.attachVideo) pending.attachVideo(data.data.src); else this._attachRelayed(from, data.data.src, pending.ev, pending.stream); }
     } else if (data.type === 'ice') {
       const cands = Array.isArray(data.data) ? data.data : [data.data];
       if (peer.remoteDescSet) addCands(cands); else peer.bufferedCandidates.push(...cands);
@@ -976,8 +1010,26 @@ export class VoiceSession extends EventTarget {
     try { peer.fsm?.stop?.(); } catch {}
     this._detachAnalyzer(peerPubkey);
     for (const [src, entry] of Array.from(this.relayed)) if (entry.via === peerPubkey) this._dropRelayed(src);
+    if (peer.hubTimer) clearTimeout(peer.hubTimer);
+    if (peer.offerTimer) clearTimeout(peer.offerTimer);
+    if (this.sfu.hub === this.auth.pubkey) {
+      for (const [targetPk, target] of this.peers) {
+        if (targetPk === peerPubkey || !target.relays) continue;
+        let dropped = false;
+        for (const key of [peerPubkey, peerPubkey + '#v']) {
+          const relayed = target.relays.get(key);
+          if (!relayed) continue;
+          try { relayed.tx.direction = 'inactive'; } catch {}
+          target.relayTxs?.delete(relayed.tx);
+          target.relays.delete(key);
+          dropped = true;
+        }
+        if (dropped) this._renegotiate(targetPk, target);
+      }
+    }
     this.peers.delete(peerPubkey);
     this._emit('peer-closed', { peerPubkey });
+    if (this.sfu.hub && this.sfu.hub !== this.auth.pubkey && this.sfu.hub === peerPubkey) this._sfuOnHubLost();
   }
 
   _attachRelayed(hubPubkey, source, ev, stream) {
@@ -1006,18 +1058,22 @@ export class VoiceSession extends EventTarget {
   _sfuRelayAll() {
     if (this.sfu.hub !== this.auth.pubkey) return;
     for (const [sourcePk, source] of this.peers) {
-      const track = source.remoteTrack;
-      if (!track || track.readyState !== 'live') continue;
-      for (const [targetPk, target] of this.peers) {
-        if (targetPk === sourcePk || target.pc?.connectionState !== 'connected') continue;
-        target.relays ||= new Map();
-        const existing = target.relays.get(sourcePk);
-        if (existing) { if (existing.track !== track) { existing.tx.sender.replaceTrack(track).catch(() => {}); existing.track = track; } continue; }
-        const stream = new MediaStream();
-        const tx = target.pc.addTransceiver(track, { direction: 'sendonly', streams: [stream] });
-        target.relays.set(sourcePk, { tx, track });
-        this._publishSignal(targetPk, 'relay', { streamId: stream.id, src: sourcePk });
-        this._renegotiate(targetPk, target);
+      const feeds = [[sourcePk, source.remoteTrack, true], [sourcePk + '#v', source.remoteVideoTrack, source.videoOn]];
+      for (const [feedKey, track, wanted] of feeds) {
+        if (!track || !wanted || track.readyState !== 'live') continue;
+        for (const [targetPk, target] of this.peers) {
+          if (targetPk === sourcePk || target.pc?.connectionState !== 'connected') continue;
+          target.relays ||= new Map();
+          target.relayTxs ||= new Set();
+          const existing = target.relays.get(feedKey);
+          if (existing) { if (existing.track !== track) { existing.tx.sender.replaceTrack(track).catch(() => {}); existing.track = track; } continue; }
+          const stream = new MediaStream();
+          const tx = target.pc.addTransceiver(track, { direction: 'sendonly', streams: [stream] });
+          target.relays.set(feedKey, { tx, track });
+          target.relayTxs.add(tx);
+          this._publishSignal(targetPk, 'relay', { streamId: stream.id, src: sourcePk });
+          this._renegotiate(targetPk, target);
+        }
       }
     }
   }
@@ -1039,25 +1095,40 @@ export class VoiceSession extends EventTarget {
   _sfuStart() {
     this.sfu.actor = this.xstate.createActor(this.fsm.sfuMachine);
     this.sfu.actor.start();
-    this.sfu.warmBackup = null;
-    this.sfu.lastSwitch = 0;
+    this.sfu.hub = null;
+    this.sfu.myClass = undefined;
     this.sfu.capacityMatrix = new Map();
     this.sfu.reflexiveByPeer = new Map();
-    this.sfu.pubkeyByShortId = new Map();
     this._sfuStopStats();
     this.sfu.statsInterval = setInterval(() => this._sfuPoll(), 2500);
+    this.sfu.watchdog = setInterval(() => this._sfuWatchdog(), HUB_PING_MS);
+    this._sfuMaybeElect();
+  }
+
+  _sfuWatchdog() {
+    if (!this.sfu.hub) return;
+    if (this.sfu.hub === this.auth.pubkey) {
+      for (const [, peer] of this.peers) this._dcSendJSON(peer, { type: 'hb' });
+      return;
+    }
+    const hubPeer = this.peers.get(this.sfu.hub);
+    if (hubPeer && hubPeer.lastHb && Date.now() - hubPeer.lastHb > HUB_SILENCE_MS) this._sfuOnHubLost(true);
   }
   _sfuStop() {
     this._sfuStopStats();
+    if (this.sfu.routeTimer) { clearTimeout(this.sfu.routeTimer); this.sfu.routeTimer = null; }
+    this.sfu.routeFor = null;
     this.sfu.actor?.send({ type: 'dissolve' });
-    this.sfu.hub = null; this.sfu.warmBackup = null;
+    this.sfu.hub = null;
     this.sfu.rttMatrix.clear();
     this.sfu.capacityMatrix?.clear();
     this.sfu.reflexiveByPeer?.clear();
+    this.sfu.seen.clear();
+    this.sfu.suspect.clear();
+    this.sfu.pubkeyByShortId.clear();
     this._lastReflexive = null;
   }
-  _sfuStopStats() { if (this.sfu.statsInterval) { clearInterval(this.sfu.statsInterval); this.sfu.statsInterval = null; } if (this.sfu.electionTimer) { clearTimeout(this.sfu.electionTimer); this.sfu.electionTimer = null; } }
-
+  _sfuStopStats() { if (this.sfu.watchdog) { clearInterval(this.sfu.watchdog); this.sfu.watchdog = null; } if (this.sfu.statsInterval) { clearInterval(this.sfu.statsInterval); this.sfu.statsInterval = null; } if (this.sfu.electionTimer) { clearTimeout(this.sfu.electionTimer); this.sfu.electionTimer = null; } }
   async _sfuPoll() {
     const rttScores = {};
     const tasks = [];
@@ -1094,8 +1165,29 @@ export class VoiceSession extends EventTarget {
     }
     await Promise.all(tasks);
     this.sfu.rttMatrix.set(this.auth.pubkey, rttScores);
+    this._sfuPruneStale();
     this._sfuRelayAll();
     this._sfuMaybeElect();
+  }
+
+  _sfuPruneStale() {
+    const now = Date.now();
+    let changed = false;
+    for (const shortId of Array.from(this.participants.keys())) {
+      if (shortId === 'local') continue;
+      const pk = this.sfu.pubkeyByShortId.get(shortId);
+      if (!pk) continue;
+      const seen = this.sfu.seen.get(pk);
+      if (seen && now - seen.at <= PEER_STALE_MS) continue;
+      if (seen && this.peers.get(pk)?.pc?.connectionState === 'connected' && now - seen.at <= PEER_STALE_MS * 2) continue;
+      this.participants.delete(shortId);
+      this.sfu.pubkeyByShortId.delete(shortId);
+      this.sfu.seen.delete(pk);
+      this._closePeer(pk);
+      this._dropRelayed(pk);
+      changed = true;
+    }
+    if (changed) this._emit('participants', { list: this.getParticipants() });
   }
 
   _sfuMaybeElect() {
@@ -1103,132 +1195,83 @@ export class VoiceSession extends EventTarget {
     this.sfu.electionTimer = setTimeout(() => { this.sfu.electionTimer = null; this._sfuElect(); }, 600);
   }
 
-  _sfuRankCandidates() {
+  _sfuUplinkClass() {
+    const raw = Math.round(Math.log2(this._estimateUplinkKbps() + 1));
+    if (this.sfu.myClass === undefined || raw > this.sfu.myClass) this.sfu.myClass = raw;
+    return this.sfu.myClass;
+  }
 
-    const all = new Set([this.auth.pubkey, ...this.participants.keys()]);
-
-    all.clear(); all.add(this.auth.pubkey);
-    for (const pk of this.peers.keys()) all.add(pk);
-    if (this.sfu.capacityMatrix) for (const pk of this.sfu.capacityMatrix.keys()) all.add(pk);
-    if (this.sfu.rttMatrix) for (const pk of this.sfu.rttMatrix.keys()) all.add(pk);
-
-    const ranked = [];
-    for (const pk of all) {
-
-      const entry = this.sfu.capacityMatrix?.get(pk);
-      const uplinkKbps = pk === this.auth.pubkey ? this._estimateUplinkKbps() : (entry?._self || 0);
-      const uplink = uplinkKbps > 0 ? Math.round(Math.log2(uplinkKbps + 1)) * 100 : 0;
-
-      const rtt = this.sfu.rttMatrix.get(pk);
-      let rttAvg = Infinity, rttCount = 0;
-      if (rtt) { let s = 0; for (const v of Object.values(rtt)) if (typeof v === 'number') { s += v; rttCount++; } if (rttCount) rttAvg = s / rttCount; }
-
-      const capCount = pk === this.auth.pubkey ? Object.keys(this._capScores()).length : Object.keys(entry || {}).filter(k => k !== '_self').length;
-
-      const rttTerm = rttCount ? Math.round(Math.max(0, 200 - rttAvg) / 50) * 50 : 0;
-      const coverageTerm = (rttCount + capCount) * 30;
-      const score = uplink + rttTerm + coverageTerm;
-
-      ranked.push({ pubkey: pk, score, uplink, rttAvg, capCount });
+  _sfuLiveSet() {
+    const now = Date.now();
+    const live = new Map();
+    live.set(this.auth.pubkey, { claim: this.sfu.hub, cls: this.sfu.myClass || 0 });
+    for (const [pk, seen] of this.sfu.seen) {
+      if (now - seen.at > PEER_STALE_MS) continue;
+      const suspectedAt = this.sfu.suspect.get(pk);
+      if (suspectedAt && seen.at <= suspectedAt) continue;
+      live.set(pk, { claim: seen.claim, cls: seen.cls });
     }
+    return live;
+  }
 
-    ranked.sort((a, b) => b.score - a.score || (a.pubkey > b.pubkey ? -1 : 1));
-    return ranked;
+  _sfuPick(live) {
+    const tally = new Map();
+    for (const [, v] of live) if (v.claim && live.has(v.claim)) tally.set(v.claim, (tally.get(v.claim) || 0) + 1);
+    const pool = tally.size ? [...tally.keys()] : [...live.keys()];
+    pool.sort((a, b) => ((tally.get(b) || 0) - (tally.get(a) || 0)) || (live.get(b).cls - live.get(a).cls) || (a > b ? -1 : 1));
+    return pool[0];
   }
 
   _sfuElect() {
-    const ranked = this._sfuRankCandidates();
-    if (!ranked.length) return;
-    const top = ranked[0];
-    const runnerUp = ranked[1] || null;
-
-    const incumbent = this.sfu.hub;
-    if (incumbent) {
-      const incEntry = ranked.find(r => r.pubkey === incumbent);
-      if (incEntry) {
-        const advantage = top.score - incEntry.score;
-        const rel = incEntry.score > 0 ? advantage / incEntry.score : Infinity;
-        const recent = Date.now() - this.sfu.lastSwitch < HUB_HYSTERESIS_MS;
-        if (top.pubkey === incumbent || rel < HUB_REL_ADVANTAGE || recent) {
-
-          this.sfu.warmBackup = (runnerUp && runnerUp.pubkey !== incumbent) ? runnerUp.pubkey : null;
-          this._sfuApplyTopology(incumbent);
-          return;
-        }
-      }
-    }
-
-    const previousHub = this.sfu.hub;
-    this.sfu.hub = top.pubkey;
-    this.sfu.warmBackup = (runnerUp && runnerUp.pubkey !== top.pubkey) ? runnerUp.pubkey : null;
-    this.sfu.lastSwitch = Date.now();
+    const live = this._sfuLiveSet();
+    const winner = this._sfuPick(live);
+    if (!winner) return;
+    if (winner === this.sfu.hub) { this._sfuApplyTopology(winner); return; }
+    const previous = this.sfu.hub;
+    this.sfu.hub = winner;
+    this.sfu.routeFor = null;
     try { this.sfu.actor?.send({ type: 'elect' }); } catch {}
     this.sfu.actor?.send({ type: 'elected' });
-    this._emit('hub-changed', { hub: top.pubkey, previous: previousHub, score: top.score, uplink: top.uplink });
-
-    if (top.pubkey !== this.auth.pubkey) this._sfuRouteToHub(top.pubkey, previousHub);
-
-    this._sfuApplyTopology(top.pubkey);
+    this._emit('hub-changed', { hub: winner, previous, uplink: live.get(winner).cls, voters: live.size });
+    this._publishPresence('hub').catch(() => {});
+    this._sfuApplyTopology(winner);
   }
 
   _sfuApplyTopology(hubPk) {
     if (hubPk !== this.auth.pubkey) {
       for (const pk of Array.from(this.peers.keys())) if (pk !== hubPk) this._closePeer(pk);
       if (!this.peers.has(hubPk)) this._maybeConnect(hubPk);
+      this._sfuWatchRoute(hubPk);
       return;
     }
-    const known = new Set();
-    if (this.sfu.pubkeyByShortId) for (const pk of this.sfu.pubkeyByShortId.values()) known.add(pk);
-    for (const pk of this.peers.keys()) known.add(pk);
-    for (const pk of this.sfu.capacityMatrix?.keys() || []) known.add(pk);
-    for (const pk of this.sfu.rttMatrix.keys()) known.add(pk);
-    for (const pk of known) {
-      if (pk === this.auth.pubkey) continue;
-      if (!this.peers.has(pk)) this._maybeConnect(pk);
-    }
+    for (const pk of this._sfuLiveSet().keys()) if (pk !== this.auth.pubkey && !this.peers.has(pk)) this._maybeConnect(pk);
     this._sfuRelayAll();
   }
 
-  async _sfuRouteToHub(hubPk, previousHub) {
-    if (!this.peers.has(hubPk)) this._maybeConnect(hubPk);
-    const hubPeer = this.peers.get(hubPk);
-    const ok = await new Promise((resolve) => {
-      if (!hubPeer) { resolve(false); return; }
-      let done = false;
-      const finish = (v) => { if (!done) { done = true; resolve(v); } };
-      const timer = setTimeout(() => finish(false), 5000);
-      const poll = setInterval(() => {
-        try {
-          const r = hubPeer.pc?.getReceivers().find(x => x.track?.kind === 'audio');
-          if (r?.track && r.track.readyState === 'live') { clearTimeout(timer); clearInterval(poll); finish(true); }
-        } catch {}
-      }, 100);
-    });
-    if (!ok && previousHub && previousHub !== hubPk && this.participants.size) {
-
-      this.sfu.hub = previousHub;
-      if (!this.peers.has(previousHub)) this._maybeConnect(previousHub);
-    }
+  _sfuWatchRoute(hubPk) {
+    if (this.sfu.routeFor === hubPk) return;
+    this.sfu.routeFor = hubPk;
+    if (this.sfu.routeTimer) clearTimeout(this.sfu.routeTimer);
+    this.sfu.routeTimer = setTimeout(() => {
+      this.sfu.routeTimer = null;
+      if (this.sfu.hub !== hubPk) return;
+      if (this.peers.get(hubPk)?.pc?.connectionState === 'connected') return;
+      this.sfu.routeFor = null;
+      this._sfuOnHubLost();
+    }, HUB_ROUTE_TIMEOUT_MS);
   }
 
-  _sfuOnHubLost() {
-    if (!this.sfu.hub) return;
-    const hubPeer = this.peers.get(this.sfu.hub);
-    if (hubPeer && hubPeer.pc?.connectionState === 'connected') return;
-    const promote = this.sfu.warmBackup;
+  _sfuOnHubLost(silent = false) {
     const lost = this.sfu.hub;
+    if (!lost || lost === this.auth.pubkey) return;
+    if (!silent && this.peers.get(lost)?.pc?.connectionState === 'connected') return;
+    this.sfu.suspect.set(lost, Date.now());
     this.sfu.hub = null;
-    if (!promote) { this._sfuMaybeElect(); return; }
-    this.sfu.hub = promote;
-    this.sfu.warmBackup = null;
-    this.sfu.lastSwitch = Date.now();
-    try { this.sfu.actor?.send({ type: 'elect' }); } catch {}
-    this.sfu.actor?.send({ type: 'elected' });
-    this._emit('hub-changed', { hub: promote, previous: lost, reason: 'failover' });
-    this._sfuApplyTopology(promote);
+    this.sfu.routeFor = null;
+    this._emit('hub-lost', { hub: lost, silent });
+    if (silent) { this._closePeer(lost); this._dropRelayed(lost); }
+    this._sfuElect();
   }
-
-  _sfuDissolve() { this.sfu.actor?.send({ type: 'dissolve' }); this.sfu.hubLostAt = Date.now(); this.sfu.hub = null; }
 
   _rttScores() { return this.sfu.rttMatrix.get(this.auth.pubkey) || {}; }
 

@@ -443,7 +443,7 @@ export const bindVoiceThread = ({ voice, thread, taps = null, media = null, chan
     if (ring && ring.length && ctx && Number.isFinite(segment.muteMs)) {
       try {
         const pcm = await decodeClipPcm(ctx, segment.bytes);
-        const result = ring.splice({ pcm, muteMs: segment.muteMs });
+        const result = ring.splice({ pcm, muteMs: segment.muteMs, unmuteMs: segment.unmuteMs });
         if (result) {
           thread.known.add(clip.id);
           thread._emit('clip-spliced', { id: clip.id, speaker: from, ...result });
