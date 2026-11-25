@@ -66,9 +66,9 @@ export const createVoiceDetector = ({ loader, sampleRate = RNNOISE_SAMPLE_RATE, 
       if (clip) emitClip(clip);
       return clip;
     },
-    assess(startMs, endMs) {
+    assess(startMs, endMs, options = {}) {
       const window = frameLog.filter((f) => f.t >= startMs && f.t <= endMs + FRAME_MS);
-      return { ...judgeClip(window, cfg), frames: window.length };
+      return { ...judgeClip(window, cfg, options), frames: window.length };
     }
   };
   return api;

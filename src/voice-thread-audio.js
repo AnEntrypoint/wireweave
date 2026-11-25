@@ -12,6 +12,17 @@ export const CATCHUP = Object.freeze({
   prePadMs: 300,
   postPadMs: 200,
   minSkipMs: 200,
+  followTailMs: 900,
+  holeMinMs: 60,
+  holeHoldMs: 2500,
+  holeRecheckMs: 250,
+  holeMaxAbs: 4,
+  spliceVoicedDb: -55,
+  alignSearchMs: 300,
+  alignWindowMs: 300,
+  alignDefaultShiftMs: 80,
+  alignMinCorrelation: 0.4,
+  alignDecimate: 4,
   planMaxMs: 20000,
   voicedLabelThreshold: STOP_THRESHOLD,
   keepAboveDb: -45,
@@ -42,12 +53,15 @@ export class PcmBudget {
 }
 
 export class PcmRing {
-  constructor({ maxMs = CATCHUP.maxBacklogMs, budget = null, onVoiced = null, onDropped = null } = {}) {
+  constructor({ maxMs = CATCHUP.maxBacklogMs, budget = null, onVoiced = null, onDropped = null, now = () => performance.now() } = {}) {
+    this.now = now;
     this.maxFrames = Math.round(maxMs / CATCHUP.frameMs);
     this.budget = budget;
     this.onVoiced = onVoiced;
     this.onDropped = onDropped;
     this.frames = [];
+    this.tail = [];
+    this.maxTail = Math.round(CATCHUP.followTailMs / CATCHUP.frameMs);
     this.voicedCount = 0;
     this.follow = true;
     this.dropped = { voicedMs: 0, unvoicedMs: 0 };
@@ -63,23 +77,40 @@ export class PcmRing {
   setFollow(follow) {
     if (this.follow === follow) return;
     this.follow = follow;
-    if (follow) this.clear();
-    else if (!this.frames.length) this.dropped = { voicedMs: 0, unvoicedMs: 0 };
+    if (follow) { this.clear(); return; }
+    if (!this.frames.length) this.dropped = { voicedMs: 0, unvoicedMs: 0 };
+    const unplayed = this.tail;
+    this.tail = [];
+    let notify = false;
+    for (const f of unplayed) { if (this._append(f, false)) notify = true; }
+    if (notify) queueMicrotask(() => this.onVoiced?.());
   }
 
   clear() {
     this.frames = [];
+    this.tail = [];
     this.voicedCount = 0;
   }
 
   dispose() { this.budget?.rings.delete(this); this.clear(); }
 
   push(data, voiced) {
-    if (this.follow) return;
-    this.frames.push({ d: data, v: voiced ? 1 : 0 });
-    if (voiced && ++this.voicedCount === 1) this.onVoiced?.();
+    const frame = { d: data, v: voiced ? 1 : 0, z: isDigitalSilence(data), t: this.now() };
+    if (this.follow) {
+      this.tail.push(frame);
+      if (this.tail.length > this.maxTail) this.tail.shift();
+      return;
+    }
+    this._append(frame);
+  }
+
+  _append(frame, notify = true) {
+    this.frames.push(frame);
+    const first = !!frame.v && ++this.voicedCount === 1;
+    if (first && notify) this.onVoiced?.();
     while (this.frames.length > this.maxFrames) this._evictOne();
     this.budget?.reclaim();
+    return first;
   }
 
   _evictOne() {
@@ -96,8 +127,97 @@ export class PcmRing {
     this.onDropped?.(this.dropped);
   }
 
+  silentRuns() {
+    const runs = [];
+    const min = Math.round(CATCHUP.holeMinMs / CATCHUP.frameMs);
+    let from = -1;
+    for (let i = 0; i <= this.frames.length; i++) {
+      const silent = i < this.frames.length && !this.frames[i].filled && this.frames[i].z;
+      if (silent && from < 0) from = i;
+      if (!silent && from >= 0) { if (i - from >= min) runs.push([from, i]); from = -1; }
+    }
+    return runs;
+  }
+
+  splice({ pcm, muteMs }) {
+    const runs = this.silentRuns();
+    if (!runs.length || !Number.isFinite(muteMs)) return null;
+    const [from, to] = runs[runs.length - 1];
+    let startSample = from * CATCHUP.frameSamples - Math.round((muteMs / 1000) * CATCHUP.sampleRate);
+    const measured = this._alignShift(pcm, startSample, to);
+    const shift = measured || { samples: Math.round((CATCHUP.alignDefaultShiftMs / 1000) * CATCHUP.sampleRate), correlation: 0 };
+    startSample -= shift.samples;
+    let filled = 0;
+    let voiced = 0;
+    for (let i = from; i < to; i++) {
+      const at = i * CATCHUP.frameSamples - startSample;
+      if (at < 0 || at + CATCHUP.frameSamples > pcm.length) continue;
+      const data = pcm.slice(at, at + CATCHUP.frameSamples);
+      const frame = this.frames[i];
+      frame.d = data;
+      frame.z = false;
+      frame.filled = true;
+      filled++;
+      if (!frame.v && frameDb(data) >= CATCHUP.spliceVoicedDb) { frame.v = 1; voiced++; }
+    }
+    this.voicedCount += voiced;
+    if (filled) this.onVoiced?.();
+    return { alignShiftMs: Math.round((shift.samples / CATCHUP.sampleRate) * 1000), alignCorrelation: Number(shift.correlation.toFixed(2)), holeFrames: to - from, holeStart: from, filledFrames: filled, voicedFrames: voiced, leadingUnplacedMs: Math.max(0, Math.round((-startSample / CATCHUP.sampleRate) * 1000)) };
+  }
+
+  _alignShift(pcm, startSample, holeEnd) {
+    const d = CATCHUP.alignDecimate;
+    const windowFrames = Math.round(CATCHUP.alignWindowMs / CATCHUP.frameMs);
+    const live = this.frames.slice(holeEnd, holeEnd + windowFrames);
+    if (live.length < windowFrames / 2) return null;
+    const refLen = Math.floor((live.length * CATCHUP.frameSamples) / d);
+    const ref = new Float32Array(refLen);
+    for (let i = 0; i < refLen; i++) ref[i] = live[Math.floor((i * d) / CATCHUP.frameSamples)].d[(i * d) % CATCHUP.frameSamples];
+    let refEnergy = 0;
+    for (let i = 0; i < refLen; i++) refEnergy += ref[i] * ref[i];
+    if (Math.sqrt(refEnergy / refLen) < 30) return null;
+    const base = holeEnd * CATCHUP.frameSamples - startSample;
+    const range = Math.round((CATCHUP.alignSearchMs / 1000) * CATCHUP.sampleRate);
+    let best = null;
+    for (let s = -range; s <= range; s += d) {
+      const at = base + s;
+      if (at < 0 || at + refLen * d > pcm.length) continue;
+      let dot = 0;
+      let energy = 0;
+      for (let i = 0; i < refLen; i++) { const v = pcm[at + i * d]; dot += v * ref[i]; energy += v * v; }
+      const correlation = dot / Math.sqrt(energy * refEnergy + 1);
+      if (!best || correlation > best.correlation) best = { samples: s, correlation };
+    }
+    if (!best || best.correlation < CATCHUP.alignMinCorrelation) return null;
+    let refined = best;
+    for (let s = best.samples - d; s <= best.samples + d; s++) {
+      const at = base + s;
+      if (at < 0 || at + refLen * d > pcm.length) continue;
+      let dot = 0;
+      let energy = 0;
+      for (let i = 0; i < refLen; i++) { const v = pcm[at + i * d]; dot += v * ref[i]; energy += v * v; }
+      const correlation = dot / Math.sqrt(energy * refEnergy + 1);
+      if (correlation > refined.correlation) refined = { samples: s, correlation };
+    }
+    return refined;
+  }
+
+  holdIndex() {
+    const horizon = this.now() - CATCHUP.holeHoldMs;
+    for (const [from, to] of this.silentRuns()) if (to < this.frames.length && this.frames[to - 1].t > horizon) return from;
+    return this.frames.length;
+  }
+
+  hasPlayable() {
+    const end = this.holdIndex();
+    for (let i = 0; i < end; i++) if (this.frames[i].v) return true;
+    return false;
+  }
+
+  isHolding() { return this.voicedCount > 0 && !this.hasPlayable(); }
+
   take(maxMs = CATCHUP.planMaxMs) {
-    const n = Math.min(this.frames.length, Math.round(maxMs / CATCHUP.frameMs));
+    const n = Math.min(this.holdIndex(), Math.round(maxMs / CATCHUP.frameMs));
     const src = this.frames.splice(0, n);
     for (const f of src) if (f.v) this.voicedCount--;
     return buildPlan(src);
@@ -110,6 +230,11 @@ export class PcmRing {
     while (this.frames.length > this.maxFrames) this._evictOne();
   }
 }
+
+const isDigitalSilence = (frame) => {
+  for (let i = 0; i < frame.length; i++) if (frame[i] > CATCHUP.holeMaxAbs || frame[i] < -CATCHUP.holeMaxAbs) return false;
+  return true;
+};
 
 const buildPlan = (src) => {
   const prePad = Math.round(CATCHUP.prePadMs / CATCHUP.frameMs);
@@ -205,6 +330,14 @@ export class SpeechGuard {
     return labelledVoiced || db >= CATCHUP.keepAboveDb || (db >= CATCHUP.noiseFloorDb && db >= this.peakDb - CATCHUP.keepBelowPeakDb);
   }
 }
+
+export const decodeClipPcm = async (ctx, bytes) => {
+  const buffer = await ctx.decodeAudioData(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  const input = buffer.getChannelData(0);
+  const out = [];
+  new AreaDownsampler(buffer.sampleRate, CATCHUP.sampleRate).process(input, (v) => out.push(toInt16(v)));
+  return Int16Array.from(out);
+};
 
 export const frameDb = (frame) => {
   let sum = 0;

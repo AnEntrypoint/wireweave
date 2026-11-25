@@ -65,18 +65,20 @@ export const clipMetrics = (frames, config = DEFAULT_VAD_CONFIG) => {
   };
 };
 
-export const applyThresholds = (m, config = DEFAULT_VAD_CONFIG) => {
+export const FRAGMENT_MIN_VOICED_MS = 100;
+
+export const applyThresholds = (m, config = DEFAULT_VAD_CONFIG, { fragment = false } = {}) => {
   if (!m) return { keep: false, reason: 'no-voice', voicedMs: 0, voicedRatio: 0, spanMs: 0 };
   const reject = (reason) => ({ keep: false, reason, ...m });
-  if (m.voicedMs < config.minVoicedMs) return reject('too-short');
-  if (m.voicedRatio < config.minVoicedRatio) return reject('low-voiced-ratio');
+  if (m.voicedMs < (fragment ? FRAGMENT_MIN_VOICED_MS : config.minVoicedMs)) return reject('too-short');
+  if (!fragment && m.voicedRatio < config.minVoicedRatio) return reject('low-voiced-ratio');
   if (m.meanVoicedEnergyDb < config.minMeanVoicedEnergyDb) return reject('too-quiet');
-  if (m.energyStdDb < config.minEnergyStdDb) return reject('flat-energy');
-  if (m.energyPeaksPerSecond < config.minEnergyPeaksPerSecond) return reject('unsyllabic');
+  if (!fragment && m.energyStdDb < config.minEnergyStdDb) return reject('flat-energy');
+  if (!fragment && m.energyPeaksPerSecond < config.minEnergyPeaksPerSecond) return reject('unsyllabic');
   if (m.periodicRatio < config.minPeriodicRatio || m.pitchSteps < config.minPitchSteps) return reject('unpitched');
-  if (m.periodicRatio > config.maxPeriodicRatio || m.pitchStepMedian < config.minPitchStepMedian) return reject('static-tone');
-  if (m.pitchStepMedian > config.maxPitchStepMedian || m.pitchStdSemitones > config.maxPitchStdSemitones) return reject('erratic-pitch');
+  if (!fragment && (m.periodicRatio > config.maxPeriodicRatio || m.pitchStepMedian < config.minPitchStepMedian)) return reject('static-tone');
+  if (!fragment && (m.pitchStepMedian > config.maxPitchStepMedian || m.pitchStdSemitones > config.maxPitchStdSemitones)) return reject('erratic-pitch');
   return { keep: true, reason: 'voice', ...m };
 };
 
-export const judgeClip = (frames, config = DEFAULT_VAD_CONFIG) => applyThresholds(clipMetrics(frames, config), config);
+export const judgeClip = (frames, config = DEFAULT_VAD_CONFIG, options = {}) => applyThresholds(clipMetrics(frames, config), config, options);

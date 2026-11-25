@@ -1,6 +1,6 @@
 import { registerProtocol } from './registry.js';
 import { hexChannelId } from '../channel-hex.js';
-import { CATCHUP, createLaneTaps, encodeWav } from '../voice-thread-audio.js';
+import { CATCHUP, createLaneTaps, decodeClipPcm, encodeWav } from '../voice-thread-audio.js';
 
 export const VOICE_THREAD_TYPE = 'voice-thread';
 export const VOICE_EVENT_KIND = 42;
@@ -148,7 +148,7 @@ export class ThreadScheduler extends EventTarget {
     let best = null;
     for (const [speaker, lane] of this.lanes) {
       const head = lane.clips[0];
-      const candidate = head ? { kind: 'clip', lane, speaker, clip: head, arrival: head.arrival } : lane.ring && lane.ring.hasVoiced() ? { kind: 'stretch', lane, speaker, arrival: lane.stretchArrival ?? this.arrivals } : null;
+      const candidate = head ? { kind: 'clip', lane, speaker, clip: head, arrival: head.arrival } : lane.ring && lane.ring.hasPlayable() ? { kind: 'stretch', lane, speaker, arrival: lane.stretchArrival ?? this.arrivals } : null;
       if (candidate && (!best || candidate.arrival < best.arrival)) best = candidate;
     }
     return best;
@@ -222,10 +222,25 @@ export class ThreadScheduler extends EventTarget {
     }
     if (this.userPaused) { this._changed(); return; }
     const next = this._peek();
-    if (!next) { this._setGate(true); this._changed(); return; }
+    if (!next) {
+      if (this._holding()) { this._recheckSoon(); this._changed(); return; }
+      this._setGate(true);
+      this._changed();
+      return;
+    }
     if (this.gateOpen && next.kind === 'clip' && this.remoteLive.size) { this._changed(); return; }
     this._setGate(false);
     if (next.kind === 'stretch') this._startStretch(next.lane, next.speaker); else this._start(next.clip);
+  }
+
+  _holding() {
+    for (const lane of this.lanes.values()) if (lane.ring && lane.ring.isHolding()) return true;
+    return false;
+  }
+
+  _recheckSoon() {
+    if (this.recheck !== null && this.recheck !== undefined) return;
+    this.recheck = this.schedule(() => { this.recheck = null; this._advance(); }, CATCHUP.holeRecheckMs);
   }
 
   _start(clip) {
@@ -420,9 +435,23 @@ export const bindVoiceThread = ({ voice, thread, taps = null, media = null, chan
     if (isLocal) thread.setLocalTalking(speaking);
     else thread.setRemoteSpeaking(key, speakerOf(voice, key), speaking);
   };
-  const receivedListener = (e) => {
+  const receivedListener = async (e) => {
     const { from, segment } = e.detail;
-    thread.enqueue({ id: segment.id, speaker: from, name: segment.name, seq: segment.seq, durationMs: segment.dur, mime: segment.mime, bytes: segment.bytes, source: 'dc' });
+    const clip = { id: segment.id, speaker: from, name: segment.name, seq: segment.seq, durationMs: segment.dur, mime: segment.mime, bytes: segment.bytes, source: 'dc' };
+    const ring = taps?.ring(from);
+    const ctx = voice.audioContext?.();
+    if (ring && ring.length && ctx && Number.isFinite(segment.muteMs)) {
+      try {
+        const pcm = await decodeClipPcm(ctx, segment.bytes);
+        const result = ring.splice({ pcm, muteMs: segment.muteMs });
+        if (result) {
+          thread.known.add(clip.id);
+          thread._emit('clip-spliced', { id: clip.id, speaker: from, ...result });
+          return;
+        }
+      } catch {}
+    }
+    thread.enqueue(clip);
   };
   const droppedListener = (e) => onDropped?.(e.detail);
   const finalizedListener = (e) => {
@@ -434,7 +463,7 @@ export const bindVoiceThread = ({ voice, thread, taps = null, media = null, chan
   };
   const streamListener = (e) => taps?.open(e.detail.peerPubkey, e.detail.stream);
   voice.addEventListener('remote-stream', streamListener);
-  if (taps) for (const key of voice.peers.keys()) taps.open(key, voice.getRemoteStream(key));
+  if (taps) for (const key of (voice.remoteKeys ? voice.remoteKeys() : voice.peers.keys())) taps.open(key, voice.getRemoteStream(key));
   voice.addEventListener('speaker', speakerListener);
   voice.addEventListener('segment-received', receivedListener);
   voice.addEventListener('segment-dropped', droppedListener);
