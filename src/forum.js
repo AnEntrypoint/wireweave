@@ -1,11 +1,8 @@
-const hexChannelId = async (channelId, serverId) => {
-  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode((serverId || 'default') + ':' + channelId));
-  return Array.from(new Uint8Array(h)).map((b) => b.toString(16).padStart(2, '0')).join('');
-};
+import { hexChannelId, requireScope } from './channel-hex.js';
 
 const FORUM_TAG_PREFIX = 'zellous-forum:';
 
-const forumAddress = (channelId, serverId) => FORUM_TAG_PREFIX + (serverId || 'default') + ':' + channelId;
+const forumAddress = (channelId, serverId) => { requireScope(serverId, channelId, 'forumAddress'); return FORUM_TAG_PREFIX + serverId + ':' + channelId; };
 
 export class Forum extends EventTarget {
   constructor({ relayPool, auth }) {
@@ -75,11 +72,13 @@ export class Forum extends EventTarget {
   repliesFor(postId) { return (this.replies.get(postId) || []).slice().sort((a, b) => a.timestamp - b.timestamp); }
 
   async loadChannel(channelId, serverId) {
-    if (this.activeChannelId) this.pool.unsubscribe('forum-' + this.activeChannelId);
+    if (this.activeScopeKey) this.pool.unsubscribe('forum-' + this.activeScopeKey);
     this.activeChannelId = channelId;
-    if (!this.posts.has(channelId)) this.posts.set(channelId, new Map());
+    const previous = this.scopes.get(channelId);
     const scope = await this._scope(channelId, serverId);
-    this.pool.subscribe('forum-' + channelId,
+    this.activeScopeKey = scope.addr;
+    if (!this.posts.has(channelId) || (previous && previous.addr !== scope.addr)) this.posts.set(channelId, new Map());
+    this.pool.subscribe('forum-' + scope.addr,
       [
         { kinds: [11], '#e': [scope.hex], limit: 100 },
         { kinds: [11], '#a': [scope.addr], limit: 100 }

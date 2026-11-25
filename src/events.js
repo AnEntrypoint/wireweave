@@ -1,13 +1,11 @@
 import { replaceableTs } from './dtag.js';
+import { hexChannelId } from './channel-hex.js';
 
 const EVENT_KIND = 31923;
 const RSVP_KIND = 31925;
 const DELETE_KIND = 5;
 
-const channelTag = async (channelId, serverId) => {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode((serverId || 'default') + ':' + channelId));
-  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
-};
+const channelTag = (channelId, serverId) => hexChannelId(channelId, serverId);
 
 const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(8))).map((b) => b.toString(16).padStart(2, '0')).join('');
 

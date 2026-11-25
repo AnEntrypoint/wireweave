@@ -109,8 +109,8 @@ export class Media {
 
   async sendMedia(file, { channelId, serverId }) {
     if (file.size > MAX_UPLOAD_BYTES) throw new Error('file is ' + mb(file.size) + ' MB — the limit is ' + mb(MAX_UPLOAD_BYTES) + ' MB');
-    const result = await this.upload(file);
     const chanHex = await hexChannelId(channelId, serverId);
+    const result = await this.upload(file);
     const imetaTag = ['imeta', 'url ' + result.url, 'm ' + result.type];
     if (result.size) imetaTag.push('size ' + result.size);
     const signed = await this.auth.sign({
@@ -124,8 +124,8 @@ export class Media {
   async sendAudioClip(file, { channelId, serverId, durationMs, speaker, seq }) {
     if (!String(file.type || '').startsWith('audio/')) throw new Error('sendAudioClip needs an audio file');
     if (file.size > MAX_UPLOAD_BYTES) throw new Error('clip is ' + mb(file.size) + ' MB — the limit is ' + mb(MAX_UPLOAD_BYTES) + ' MB');
-    const result = await this.upload(file);
     const channelHex = await hexChannelId(channelId, serverId);
+    const result = await this.upload(file);
     const signed = await this.auth.sign({
       kind: 42, created_at: Math.floor(Date.now() / 1000),
       tags: buildKeepTags({ channelHex, url: result.url, mime: result.type, durationMs, speaker: speaker || this.auth.pubkey, seq }),

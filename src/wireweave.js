@@ -70,7 +70,7 @@ export const createWireweave = ({
   const chat = createChat({
     relayPool: pool, auth,
     getChannelContext: () => ({
-      channelId: currentChannelId, serverId: servers.currentServerId || '',
+      channelId: channels.serverId === servers.currentServerId ? currentChannelId : null, serverId: servers.currentServerId || '',
       channelType: channels.channels.find((c) => c.id === currentChannelId)?.type || null
     }),
     isAdmin: (sid) => roles.isAdmin(sid),
@@ -85,6 +85,9 @@ export const createWireweave = ({
   const servers = createServers({
     relayPool: pool, auth, storage,
     onSwitch: async (serverId) => {
+      currentChannelId = null;
+      unread.setActive(null);
+      chat.loadHistory(null);
       roles.subscribe(serverId);
       account.watchServerNicks(serverId);
       settings.subscribe(serverId);

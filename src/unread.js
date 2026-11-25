@@ -1,7 +1,4 @@
-const hexChannelId = async (channelId, serverId) => {
-  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode((serverId || 'default') + ':' + channelId));
-  return Array.from(new Uint8Array(h)).map((b) => b.toString(16).padStart(2, '0')).join('');
-};
+import { hexChannelId } from './channel-hex.js';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -27,6 +24,8 @@ export class Unread extends EventTarget {
     this._emitTimer = null;
     this._load();
   }
+
+  _lk(channelId) { return this.serverId + '|' + channelId; }
 
   _key() { return 'wireweave.unread.' + (this.auth.pubkey || 'anon'); }
 
@@ -62,30 +61,31 @@ export class Unread extends EventTarget {
   boundaryFor(channelId) { return this.boundaries[channelId] || null; }
 
   setActive(channelId) {
-    if (channelId && channelId !== this.activeChannelId) this.boundaries[channelId] = this.lastRead[channelId] || null;
+    if (channelId && !this.serverId) return;
+    if (channelId && channelId !== this.activeChannelId) this.boundaries[channelId] = this.lastRead[this._lk(channelId)] || null;
     this.activeChannelId = channelId || null;
     if (!channelId) return;
     this.counts[channelId] = 0;
     this.pings[channelId] = 0;
-    this.lastRead[channelId] = Math.max(this.lastRead[channelId] || 0, nowSec());
+    this.lastRead[this._lk(channelId)] = Math.max(this.lastRead[this._lk(channelId)] || 0, nowSec());
     this._save();
     this._emit();
   }
 
   markRead(channelId) {
-    if (!channelId) return;
+    if (!channelId || !this.serverId) return;
     delete this.boundaries[channelId];
     this.counts[channelId] = 0;
     this.pings[channelId] = 0;
-    this.lastRead[channelId] = Math.max(this.lastRead[channelId] || 0, nowSec());
+    this.lastRead[this._lk(channelId)] = Math.max(this.lastRead[this._lk(channelId)] || 0, nowSec());
     this._save();
     this._emit();
   }
 
   markUnread(channelId, atSec) {
-    if (!channelId) return;
+    if (!channelId || !this.serverId) return;
     const at = Math.max(1, Math.floor(atSec || 0));
-    this.lastRead[channelId] = at;
+    this.lastRead[this._lk(channelId)] = at;
     this.boundaries[channelId] = at;
     this.counts[channelId] = Math.max(1, this.counts[channelId] || 0);
     this._save();
@@ -109,7 +109,7 @@ export class Unread extends EventTarget {
     }
     let since = nowSec();
     for (const c of text) {
-      const lr = this.lastRead[c.id] || 0;
+      const lr = this.lastRead[this._lk(c.id)] || 0;
       if (lr && lr < since) since = lr;
     }
     this.pool.subscribe('unread-' + serverId,
@@ -130,13 +130,13 @@ export class Unread extends EventTarget {
     const channelId = hex && this.hexToChannel.get(hex);
     if (!channelId) return;
     if (channelId === this.activeChannelId) {
-      if ((event.created_at || 0) > (this.lastRead[channelId] || 0)) {
-        this.lastRead[channelId] = event.created_at;
+      if ((event.created_at || 0) > (this.lastRead[this._lk(channelId)] || 0)) {
+        this.lastRead[this._lk(channelId)] = event.created_at;
         this._save();
       }
       return;
     }
-    if ((event.created_at || 0) <= (this.lastRead[channelId] || 0)) return;
+    if ((event.created_at || 0) <= (this.lastRead[this._lk(channelId)] || 0)) return;
     this.counts[channelId] = (this.counts[channelId] || 0) + 1;
     if (this.pingTest && event.pubkey !== this.auth.pubkey && this.pingTest(event)) this.pings[channelId] = (this.pings[channelId] || 0) + 1;
     this._emit();

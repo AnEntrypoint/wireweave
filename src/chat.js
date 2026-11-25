@@ -1,14 +1,11 @@
 import { joinContent, greetingFor } from './membership.js';
+import { hexChannelId } from './channel-hex.js';
 const TYPING_KIND = 20042;
 const TYPING_TTL_MS = 6000;
 const TYPING_THROTTLE_MS = 3000;
 const DELETION_LOOKBACK_S = 7 * 86400;
 const DELETION_LIMIT = 300;
 
-const hexChannelId = async (channelId, serverId) => {
-  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode((serverId || 'default') + ':' + channelId));
-  return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('');
-};
 
 const countLeadingZeroBits = (hexId) => {
   let bits = 0;
@@ -46,6 +43,7 @@ export class Chat extends EventTarget {
 
     this.getEventHash = getEventHash; this.powDifficulty = powDifficulty;
     this.activeChannelId = null;
+    this.activeScope = null;
     this.typers = new Map(); this.lastTypingSent = 0; this.typingTimer = null;
     this.messages = [];
     this.profiles = new Map(); this.fetching = new Set();
@@ -74,6 +72,10 @@ export class Chat extends EventTarget {
     const { channelId, serverId, channelType } = _ctx || this.getChannelContext();
     if (!this.auth.isLoggedIn()) {
       this._emit('send-blocked', { reason: 'not-signed-in' });
+      return;
+    }
+    if (!serverId) {
+      this._emit('send-blocked', { reason: 'no-server' });
       return;
     }
     if (!channelId) {
@@ -117,7 +119,7 @@ export class Chat extends EventTarget {
     this.pool.publish(signed);
   }
 
-  hasChannel() { return !!this.getChannelContext().channelId; }
+  hasChannel() { const c = this.getChannelContext(); return !!(c.channelId && c.serverId); }
 
   retrySend(id) { return this.pool.retryPublish(id); }
 
@@ -150,29 +152,33 @@ export class Chat extends EventTarget {
 
   async loadHistory(channelId) {
     const { serverId } = this.getChannelContext();
-    if (this.activeChannelId) {
-      this.pool.unsubscribe('chat-' + this.activeChannelId);
-      this.pool.unsubscribe('chat-deletions-' + this.activeChannelId);
-      this.pool.unsubscribe('chat-typing-' + this.activeChannelId);
+    if (this.activeScope) {
+      this.pool.unsubscribe('chat-' + this.activeScope);
+      this.pool.unsubscribe('chat-deletions-' + this.activeScope);
+      this.pool.unsubscribe('chat-typing-' + this.activeScope);
     }
+    const scope = serverId && channelId ? serverId + '|' + channelId : null;
+    this.activeScope = scope;
     this.activeChannelId = channelId;
     this._emit('channel', { channelId });
     this.messages = [];
     this.deletedIds = this.deletedIds || new Set();
     this._emit('messages', { list: [] });
+    if (!scope) return;
     const chanHex = await hexChannelId(channelId, serverId);
-    if (this.activeChannelId !== channelId) return;
+    if (this.activeScope !== scope) return;
     const collected = [];
     let loaded = false;
-    this.pool.subscribe('chat-' + channelId,
+    this.pool.subscribe('chat-' + scope,
       [{ kinds: [42], '#e': [chanHex], limit: 50 }],
       (ev) => {
         if (!((ev.tags || []).some(t => t[0] === 'e' && t[1] === chanHex) && !this._isBlocked(serverId, ev.pubkey) && !this.deletedIds.has(ev.id))) return;
         const msg = this._eventToMsg(ev);
+        if (this.activeScope !== scope) return;
         if (loaded) this._addMessage(msg); else collected.push(msg);
       },
       () => {
-        if (loaded || this.activeChannelId !== channelId) return;
+        if (loaded || this.activeScope !== scope) return;
         loaded = true;
         const known = new Set(collected.map((m) => m.id));
         const merged = [...collected, ...this.messages.filter((m) => !known.has(m.id) && !this.deletedIds.has(m.id))];
@@ -181,17 +187,17 @@ export class Chat extends EventTarget {
         this._emit('messages', { list: merged });
       });
     this.typers.clear();
-    this.pool.subscribe('chat-typing-' + channelId,
+    this.pool.subscribe('chat-typing-' + scope,
       [{ kinds: [TYPING_KIND], '#e': [chanHex], since: Math.floor(Date.now() / 1000) - 5 }],
       (ev) => {
-        if (ev.pubkey === this.auth.pubkey || this._isBlocked(serverId, ev.pubkey)) return;
+        if (this.activeScope !== scope || ev.pubkey === this.auth.pubkey || this._isBlocked(serverId, ev.pubkey)) return;
         if (!(ev.tags || []).some((t) => t[0] === 'e' && t[1] === chanHex)) return;
         this.typers.set(ev.pubkey, Date.now() + TYPING_TTL_MS);
         this._emitTyping();
         clearTimeout(this.typingTimer);
         this.typingTimer = setTimeout(() => this._emitTyping(), TYPING_TTL_MS + 50);
       });
-    this.pool.subscribe('chat-deletions-' + channelId,
+    this.pool.subscribe('chat-deletions-' + scope,
       [{ kinds: [5], since: Math.floor(Date.now() / 1000) - DELETION_LOOKBACK_S, limit: DELETION_LIMIT }],
       (ev) => {
         const targetId = (ev.tags || []).find((t) => t[0] === 'e')?.[1];
