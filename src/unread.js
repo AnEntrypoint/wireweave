@@ -1,6 +1,8 @@
 import { hexChannelId } from './channel-hex.js';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
+const HISTORY_SEC = 7 * 24 * 3600;
+const HISTORY_LIMIT = 500;
 
 const trySetItem = (storage, key, value) => {
   try { storage.setItem(key, value); return true; } catch { return false; }
@@ -96,7 +98,10 @@ export class Unread extends EventTarget {
     if (!serverId) return this.stop();
     const text = (channels || []).filter((c) => c && c.id && c.type !== 'voice');
     if (!text.length) return this.stop();
+    const startKey = serverId + '|' + text.map((c) => c.id).sort().join(',');
+    if (this.serverId === serverId && this._startKey === startKey) return;
     this.stop();
+    this._startKey = startKey;
     this.serverId = serverId;
     this.counts = {};
     this.pings = {};
@@ -107,18 +112,20 @@ export class Unread extends EventTarget {
       this.hexToChannel.set(hex, c.id);
       hexes.push(hex);
     }
-    let since = nowSec();
+    const now = nowSec();
+    let since = now;
     for (const c of text) {
-      const lr = this.lastRead[this._lk(c.id)] || 0;
-      if (lr && lr < since) since = lr;
+      const lr = this.lastRead[this._lk(c.id)] || now - HISTORY_SEC;
+      if (lr < since) since = lr;
     }
     this.pool.subscribe('unread-' + serverId,
-      [{ kinds: [42], '#e': hexes, since }],
+      [{ kinds: [42], '#e': hexes, since, limit: HISTORY_LIMIT }],
       (event) => this._onEvent(event));
     this._emit();
   }
 
   stop() {
+    this._startKey = null;
     if (this.serverId) this.pool.unsubscribe('unread-' + this.serverId);
     this.serverId = null;
     this.hexToChannel = new Map();
@@ -137,6 +144,7 @@ export class Unread extends EventTarget {
       return;
     }
     if ((event.created_at || 0) <= (this.lastRead[this._lk(channelId)] || 0)) return;
+    if (event.pubkey === this.auth.pubkey) return;
     this.counts[channelId] = (this.counts[channelId] || 0) + 1;
     if (this.pingTest && event.pubkey !== this.auth.pubkey && this.pingTest(event)) this.pings[channelId] = (this.pings[channelId] || 0) + 1;
     this._emit();
