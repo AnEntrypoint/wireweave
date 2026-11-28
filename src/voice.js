@@ -20,6 +20,8 @@ const PEER_STALE_MS = 15000;
 const PRESENCE_LAPSE_MS = 10000;
 const HUB_DISCONNECT_MS = 3000;
 const HUB_ROUTE_TIMEOUT_MS = 10000;
+const HUB_CONTRADICT_MS = 3000;
+const HUB_UNCONNECTED_MS = 4000;
 const HUB_PING_MS = 1000;
 const HUB_WATCH_MS = 500;
 const OFFER_RETRY_MS = 2500;
@@ -1346,13 +1348,29 @@ export class VoiceSession extends EventTarget {
     return pool[0];
   }
 
+  _sfuHubContradicted(live) {
+    const hub = this.sfu.hub;
+    if (!hub || hub === this.auth.pubkey || this.peers.get(hub)?.pc?.connectionState === 'connected') return false;
+    const elected = Date.now() - (this.sfu.hubAt || 0);
+    if (elected < HUB_CONTRADICT_MS) return false;
+    if (this._hubConfirmed && elected >= HUB_UNCONNECTED_MS) return true;
+    for (const [pk, v] of live) {
+      if (pk === hub || pk === this.auth.pubkey || !v.claim || v.claim === hub || !live.has(v.claim)) continue;
+      if ((this.sfu.seen.get(pk)?.at || 0) > this.sfu.hubAt) return true;
+    }
+    return false;
+  }
+
   _sfuElect() {
     const live = this._sfuLiveSet();
+    if (this._sfuHubContradicted(live)) { this._sfuOnHubLost(true, 'contradicted'); return; }
     const winner = this._sfuPick(live);
     if (!winner) return;
     if (winner === this.sfu.hub) { this._sfuApplyTopology(winner); return; }
     const previous = this.sfu.hub;
     this.sfu.hub = winner;
+    this.sfu.hubAt = Date.now();
+    setTimeout(() => { if (this.sfu.hub === winner) this._sfuMaybeElect(); }, HUB_UNCONNECTED_MS + 100);
     this.sfu.routeFor = null;
     try { this.sfu.actor?.send({ type: 'elect' }); } catch {}
     this.sfu.actor?.send({ type: 'elected' });
@@ -1387,7 +1405,7 @@ export class VoiceSession extends EventTarget {
     }, HUB_ROUTE_TIMEOUT_MS);
   }
 
-  _sfuOnHubLost(silent = false) {
+  _sfuOnHubLost(silent = false, why) {
     const lost = this.sfu.hub;
     if (!lost || lost === this.auth.pubkey) return;
     if (!silent && this.peers.get(lost)?.pc?.connectionState === 'connected') return;
@@ -1396,7 +1414,7 @@ export class VoiceSession extends EventTarget {
     this.sfu.routeFor = null;
     const link = this.peers.get(lost) && linkOf(this.peers.get(lost));
     const at = Date.now();
-    this._emit('hub-lost', { hub: lost, silent, hbAgeMs: link && link.hbAt ? at - link.hbAt : null, netAgeMs: link && link.netAt ? at - link.netAt : null });
+    this._emit('hub-lost', { hub: lost, silent, hbAgeMs: link && link.hbAt ? at - link.hbAt : null, netAgeMs: link && link.netAt ? at - link.netAt : null, why });
     if (silent) { this._closePeer(lost); this._dropRelayed(lost); }
     this._sfuElect();
   }
